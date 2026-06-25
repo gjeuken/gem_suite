@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gem_suite"
+version = "0.1.0"
+description = "Single-user, local tool for analysing genome-scale metabolic models (GEMs) via COBRApy."
+requires-python = ">=3.11"
+readme = "SPEC.md"
+authors = [{ name = "gjeuken", email = "gjeuken@gmail.com" }]
+
+# Core runtime deps needed for ModelService (milestones 1-3).
+# Heavier, milestone-specific deps live in the extras below so the package is
+# installable incrementally as milestones land.
+dependencies = [
+    "cobra>=0.29",
+    "optlang>=1.8",
+    "pandas>=2.0",
+    "scipy>=1.11",     # required by cobra for MAT model IO
+    "pyarrow>=15",     # parquet artifacts for the job layer (FVA results)
+]
+
+[project.scripts]
+gem-suite-app = "gem_suite.app.main:main"
+
+[project.optional-dependencies]
+# Milestone 6 (strain design).
+strain = ["straindesign>=1.10"]
+# Frontend (Dash). Install with: pip install -e ".[app]"
+app = ["dash>=2.16", "dash-ag-grid>=31"]
+# Default solver per SPEC (academic license); GLPK ships with cobra.
+gurobi = ["gurobipy>=11"]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["gem_suite*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    # third-party: StrainDesign passes int64 to scipy.sparse.diags
+    "ignore:Input has data type int64:FutureWarning:straindesign",
+]

@@ -1,0 +1,11 @@
+# Gurobi license — contains a secret KEY, keep it out of version control.
+# gem_suite auto-detects it from the repo root (see gem_suite/__init__.py).
+gurobi.lic
+
+# Python build / cache artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/

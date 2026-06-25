@@ -1,0 +1,30 @@
+<svg viewBox="0 0 430 130" xmlns="http://www.w3.org/2000/svg" font-family="Inter, Helvetica, Arial, sans-serif">
+  <g transform="translate(72,65) scale(0.74) translate(0,-4)">
+    <line x1="0" y1="48" x2="0" y2="58" stroke="#064E3B" stroke-width="3" stroke-linecap="round"/>
+    <g stroke="#064E3B" stroke-width="0.9" stroke-opacity="0.45" stroke-linejoin="round">
+      <polygon points="0,-50 14,-30 0,-22" fill="#A7F3D0"/>
+      <polygon points="14,-30 0,2 0,-22" fill="#6EE7B7"/>
+      <polygon points="14,-30 26,-4 0,2" fill="#34D399"/>
+      <polygon points="26,-4 0,26 0,2" fill="#10B981"/>
+      <polygon points="26,-4 18,24 0,26" fill="#059669"/>
+      <polygon points="18,24 0,48 0,26" fill="#047857"/>
+      <polygon points="0,-50 -14,-30 0,-22" fill="#6EE7B7"/>
+      <polygon points="-14,-30 0,2 0,-22" fill="#A7F3D0"/>
+      <polygon points="-14,-30 -26,-4 0,2" fill="#10B981"/>
+      <polygon points="-26,-4 0,26 0,2" fill="#34D399"/>
+      <polygon points="-26,-4 -18,24 0,26" fill="#047857"/>
+      <polygon points="-18,24 0,48 0,26" fill="#059669"/>
+    </g>
+    <polygon points="0,-50 14,-30 26,-4 18,24 0,48 -18,24 -26,-4 -14,-30"
+             fill="none" stroke="#064E3B" stroke-width="2.6" stroke-linejoin="round"/>
+    <g fill="#064E3B" stroke="#ECFDF5" stroke-width="1.1">
+      <circle cx="0" cy="-50" r="3"/>
+      <circle cx="14" cy="-30" r="2.8"/><circle cx="-14" cy="-30" r="2.8"/>
+      <circle cx="26" cy="-4" r="2.8"/><circle cx="-26" cy="-4" r="2.8"/>
+      <circle cx="18" cy="24" r="2.8"/><circle cx="-18" cy="24" r="2.8"/>
+      <circle cx="0" cy="-22" r="2.6"/><circle cx="0" cy="2" r="2.6"/><circle cx="0" cy="26" r="2.6"/>
+      <circle cx="0" cy="48" r="3.2"/>
+    </g>
+  </g>
+  <text x="132" y="82" font-size="54" fill="#0F2A24"><tspan font-weight="400">little</tspan><tspan font-weight="800" fill="#0B5C46">GEM</tspan></text>
+</svg>
