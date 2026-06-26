@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import re
 
-from dash import Input, Output, State, html, dcc, no_update, callback_context
+from dash import (
+    ALL, Input, Output, State, callback_context, dcc, html, no_update,
+)
 import dash_ag_grid as dag
 import plotly.graph_objects as go
 
@@ -17,6 +19,15 @@ _FVA_COLS = [
     {"field": "reaction", "headerName": "Reaction", "filter": True, "width": 180},
     {"field": "minimum", "headerName": "Min", "type": "numericColumn", "flex": 1},
     {"field": "maximum", "headerName": "Max", "type": "numericColumn", "flex": 1},
+]
+_BINDING_COLS = [
+    {"field": "reaction_id", "headerName": "Reaction", "filter": True, "width": 160},
+    {"field": "flux", "type": "numericColumn", "width": 110},
+    {"field": "bound", "headerName": "At bound", "width": 100},
+    {"field": "bound_value", "headerName": "Bound", "type": "numericColumn",
+     "width": 110},
+    {"field": "reduced_cost", "headerName": "Reduced cost", "type": "numericColumn",
+     "flex": 1},
 ]
 
 
@@ -139,18 +150,23 @@ def layout() -> html.Div:
             html.Div(
                 [
                     html.Span("Objective:"),
-                    dcc.Dropdown(id="objective-input", options=[], value=None,
-                                 placeholder="search a reaction…",
-                                 searchable=True, clearable=True,
-                                 style={"width": "22rem"}),
+                    dcc.Dropdown(id="objective-input", options=[], value=[],
+                                 placeholder="search reaction(s) — pick one or more",
+                                 searchable=True, clearable=True, multi=True,
+                                 style={"width": "30rem"}),
                     dcc.RadioItems(id="objective-direction",
                                    options=[{"label": " max", "value": "max"},
                                             {"label": " min", "value": "min"}],
                                    value="max", inline=True),
                     html.Button("Set objective", id="set-objective-btn", n_clicks=0),
                 ],
-                style={"display": "flex", "gap": "0.5rem", "alignItems": "center"},
+                style={"display": "flex", "gap": "0.5rem", "alignItems": "center",
+                       "flexWrap": "wrap"},
             ),
+            # one coefficient field per selected reaction (linear combination)
+            html.Div(id="objective-coeffs",
+                     style={"display": "flex", "gap": "0.75rem", "flexWrap": "wrap",
+                            "marginTop": "0.25rem"}),
             html.Div(id="objective-display",
                      style={"marginTop": "0.25rem", "opacity": 0.85}),
             html.Div(
@@ -173,6 +189,11 @@ def layout() -> html.Div:
             dag.AgGrid(id="flux-grid", columnDefs=_FLUX_COLS, rowData=[],
                        defaultColDef={"sortable": True, "resizable": True},
                        style={"height": "35vh"}),
+            html.Div("Binding constraints (bounds met with equality at the optimum)",
+                     style={"fontWeight": "bold", "marginTop": "0.5rem"}),
+            dag.AgGrid(id="binding-grid", columnDefs=_BINDING_COLS, rowData=[],
+                       defaultColDef={"sortable": True, "resizable": True},
+                       style={"height": "25vh"}),
             dcc.Graph(id="exchange-plot",
                       figure=build_exchange_flux_figure({"uptake": [], "secretion": []})),
             html.Hr(),
@@ -216,24 +237,53 @@ def register_callbacks(app, service, backend) -> None:
         except Exception:
             return []
 
+    # a coefficient field per selected reaction (linear combination); preserve
+    # already-entered coefficients when the selection changes
+    @app.callback(
+        Output("objective-coeffs", "children"),
+        Input("objective-input", "value"),
+        State({"kind": "obj-coef", "rxn": ALL}, "value"),
+        State({"kind": "obj-coef", "rxn": ALL}, "id"),
+        prevent_initial_call=True,
+    )
+    def _coeffs(selected, cur_vals, cur_ids):
+        selected = selected or []
+        existing = {cid["rxn"]: v for cid, v in zip(cur_ids or [], cur_vals or [])}
+        if len(selected) <= 1:
+            return ""        # single reaction: coefficient is implicitly 1.0
+        return [
+            html.Span(
+                [html.Span(f"{rid} ×", style={"marginRight": "0.2rem"}),
+                 dcc.Input(id={"kind": "obj-coef", "rxn": rid}, type="number",
+                           value=existing.get(rid, 1.0), step=0.1,
+                           style={"width": "5rem"})],
+                style={"display": "inline-flex", "alignItems": "center"})
+            for rid in selected
+        ]
+
     @app.callback(
         Output("objective-display", "children"),
         Output("objective-direction", "value"),
         Input("set-objective-btn", "n_clicks"),
         Input("session-store", "data"),
         State("objective-input", "value"),
+        State({"kind": "obj-coef", "rxn": ALL}, "value"),
+        State({"kind": "obj-coef", "rxn": ALL}, "id"),
         State("objective-direction", "value"),
         prevent_initial_call=True,
     )
-    def _objective(_n, session_id, expr, direction):
+    def _objective(_n, session_id, selected, coef_vals, coef_ids, direction):
         if not session_id:
             return "No model loaded.", no_update
         if callback_context.triggered_id == "set-objective-btn":
-            if not expr or not expr.strip():
-                return "Enter a reaction id to set as the objective.", no_update
+            selected = selected or []
+            if not selected:
+                return "Select at least one reaction for the objective.", no_update
+            coeffs = {cid["rxn"]: v for cid, v in zip(coef_ids or [], coef_vals or [])}
+            terms = {rid: float(coeffs.get(rid, 1.0) or 0.0) for rid in selected}
             try:
-                out = controllers.set_objective(service, session_id, expr,
-                                                direction=direction)
+                out = controllers.set_objective_combination(
+                    service, session_id, terms, direction=direction)
             except Exception as exc:
                 return f"Failed: {type(exc).__name__}: {exc}", no_update
         else:  # session changed → show current objective + sync the toggle to it
@@ -244,6 +294,7 @@ def register_callbacks(app, service, backend) -> None:
     @app.callback(
         Output("analysis-objective", "children"),
         Output("flux-grid", "rowData"),
+        Output("binding-grid", "rowData"),
         Output("exchange-plot", "figure"),
         Output("fast-run", "data"),
         Output("efm-display", "children"),
@@ -256,7 +307,7 @@ def register_callbacks(app, service, backend) -> None:
     def _fast(_n_fba, _n_pfba, loopless, session_id):
         empty = build_exchange_flux_figure({"uptake": [], "secretion": []})
         if not session_id:
-            return "Load a model first.", [], empty, None, ""
+            return "Load a model first.", [], [], empty, None, ""
         ll = bool(loopless)
         try:
             if callback_context.triggered_id == "pfba-btn":
@@ -266,10 +317,11 @@ def register_callbacks(app, service, backend) -> None:
                 out = controllers.run_fba(service, session_id, loopless=ll)
                 kind, label = "fba", "FBA"
         except Exception as exc:
-            return f"{type(exc).__name__}: {exc}", [], empty, None, ""
+            return f"{type(exc).__name__}: {exc}", [], [], empty, None, ""
         text = (f"{label}{' (loopless)' if ll else ''}: "
                 f"objective = {out['objective_value']:.6g}  "
-                f"({out['status']}, {out['n_active']} active fluxes)")
+                f"({out['status']}, {out['n_active']} active fluxes, "
+                f"{len(out['binding'])} binding)")
         fluxes = {f["reaction"]: f["flux"] for f in out["fluxes"]}
         diagram = controllers.exchange_flux_diagram(service, session_id, fluxes)
         efm_text = ""
@@ -279,7 +331,8 @@ def register_callbacks(app, service, backend) -> None:
             efm_text = (f"pFBA solution {verdict}  "
                         f"(active {e['n_active']}, rank {e['rank']}, "
                         f"nullity {e['nullity']})")
-        return (text, out["fluxes"], build_exchange_flux_figure(diagram),
+        return (text, out["fluxes"], out["binding"],
+                build_exchange_flux_figure(diagram),
                 {"kind": kind, "loopless": ll}, efm_text)
 
     @app.callback(

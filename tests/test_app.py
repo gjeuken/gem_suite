@@ -57,6 +57,44 @@ def test_load_model_from_upload_rejects_empty(service):
         controllers.load_model_from_upload(service, "", "x.xml")
 
 
+def test_add_reaction_controller(service, session):
+    n0 = len(controllers.reaction_rows(service, session))
+    rec = controllers.add_reaction(
+        service, session, "ATPSINK", "ATP sink", "atp_c --> adp_c",
+        lower=0, upper=500, gpr="b9999")
+    assert rec["op"] == "add_reaction"
+    assert rec["after"]["id"] == "ATPSINK"
+    assert rec["after"]["upper_bound"] == 500.0
+    assert len(controllers.reaction_rows(service, session)) == n0 + 1
+
+
+def test_add_reaction_reversible_default_bounds(service, session):
+    rec = controllers.add_reaction(service, session, "REVX", "", "atp_c <=> adp_c")
+    assert rec["after"]["lower_bound"] == -1000.0    # reversible arrow -> default LB
+    assert rec["after"]["upper_bound"] == 1000.0
+
+
+def test_add_reaction_create_missing_metabolite(service, session):
+    before = service.summary(session)["n_metabolites"]
+    controllers.add_reaction(service, session, "NEWX", "", "atp_c --> novel_c",
+                             create_missing=True)
+    assert service.summary(session)["n_metabolites"] == before + 1
+
+
+def test_export_sbml_roundtrip(service, session):
+    import tempfile
+
+    # add a reaction, export, reload -> the addition survives
+    controllers.add_reaction(service, session, "ATPSINK", "", "atp_c --> adp_c")
+    fname, data = controllers.export_sbml(service, session)
+    assert fname.endswith(".xml") and data
+    path = tempfile.mktemp(suffix=".xml")
+    with open(path, "wb") as fh:
+        fh.write(data)
+    sid2 = service.load_model(path)
+    assert "ATPSINK" in {r["id"] for r in service.list_reactions(sid2)}
+
+
 def test_reaction_rows_and_filter(service, session):
     assert len(controllers.reaction_rows(service, session)) == 95
     ex = controllers.reaction_rows(service, session, pattern="^EX_")
@@ -122,6 +160,19 @@ def test_run_scan_1d_and_figure(service, session):
     fig = build_scan_figure(res)
     assert fig.data[0].type == "scatter"
     assert list(fig.data[0].x) == [-10, -8, -6, -4, -2]
+
+
+def test_run_scan_response_flux_and_label(service, session):
+    from gem_suite.app.pages.scan import build_scan_figure
+
+    res = controllers.run_scan(
+        service, session,
+        {"reaction_id": "EX_glc__D_e", "min": -10, "max": -2, "points": 4},
+        response="EX_co2_e")
+    assert res["response"] == "EX_co2_e"
+    fig = build_scan_figure(res)
+    assert "EX_co2_e flux" in fig.layout.yaxis.title.text       # response label
+    assert fig.data[0].type == "scatter"
 
 
 def test_run_scan_2d_and_surface(service, session):
@@ -270,6 +321,15 @@ def test_run_pfba_includes_efm(service, session):
     assert out["efm"]["nullity"] == out["efm"]["n_active"] - out["efm"]["rank"]
 
 
+def test_run_fba_includes_binding(service, session):
+    out = controllers.run_fba(service, session)
+    assert "binding" in out and out["binding"]
+    ids = {b["reaction_id"] for b in out["binding"]}
+    assert "EX_glc__D_e" in ids                       # glucose uptake cap is binding
+    assert {"reaction_id", "flux", "bound", "bound_value", "reduced_cost"} <= \
+        set(out["binding"][0])
+
+
 def test_fba_table_and_export_bundle(service, session):
     import io
     import zipfile
@@ -323,6 +383,26 @@ def test_set_objective_changes_fba(service, session):
 def test_set_objective_linear_combination(service, session):
     out = controllers.set_objective(service, session, "PFK, PGI:0.5")
     assert "PFK" in out["objective"] and "PGI" in out["objective"]
+
+
+def test_set_objective_combination(service, session):
+    out = controllers.set_objective_combination(
+        service, session, {"PFK": 1.0, "PGI": 0.5})
+    assert "PFK" in out["objective"] and "PGI" in out["objective"]
+    # the combination is the active objective
+    assert {r for r in service.objective_reactions(session)} == {"PFK", "PGI"}
+
+
+def test_set_objective_combination_with_direction(service, session):
+    out = controllers.set_objective_combination(
+        service, session, {"ATPM": 1.0, "PFK": 2.0}, direction="min")
+    assert out["direction"] == "min"
+    assert "ATPM" in out["objective"] and "PFK" in out["objective"]
+
+
+def test_set_objective_combination_empty_raises(service, session):
+    with pytest.raises(ValueError):
+        controllers.set_objective_combination(service, session, {})
 
 
 def test_set_objective_direction_toggle(service, session):

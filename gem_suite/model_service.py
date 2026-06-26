@@ -666,19 +666,58 @@ class ModelService:
         is_efm, info = is_elementary_flux_mode(n_matrix, v, tol=tol)
         return {"is_efm": bool(is_efm), **info}
 
-    def scan_objective(self, session_id: str, scan: list[dict]) -> dict:
-        """Scan the objective value over a grid of fixed flux values.
+    def binding_constraints(self, session_id: str, fluxes: dict[str, float],
+                            reduced_costs: dict[str, float] | None = None,
+                            tol: float = 1e-6) -> list[dict]:
+        """Reactions whose optimal flux meets a bound with equality (binding bounds).
+
+        These are the flux inequality constraints (lb ≤ v ≤ ub) that are tight at
+        the optimum. Trivially inactive reactions (flux ≈ 0 sitting on a 0 bound)
+        are skipped. `reduced_costs` (from FBA) flags which binding bounds are
+        actually limiting (non-zero dual); pass None for pFBA.
+        """
+        s = self._session(session_id)
+        out: list[dict] = []
+        for r in s.model.reactions:
+            f = float(fluxes.get(r.id, 0.0))
+            lb, ub = float(r.lower_bound), float(r.upper_bound)
+            at_lb = math.isclose(f, lb, abs_tol=tol, rel_tol=1e-6)
+            at_ub = math.isclose(f, ub, abs_tol=tol, rel_tol=1e-6)
+            if not (at_lb or at_ub):
+                continue
+            if at_lb and at_ub:
+                bound, bval = "fixed", ub
+            elif at_ub:
+                bound, bval = "upper", ub
+            else:
+                bound, bval = "lower", lb
+            if abs(f) <= tol and abs(bval) <= tol:
+                continue                         # unused/inactive at a zero bound
+            rc = (None if reduced_costs is None
+                  else float(reduced_costs.get(r.id, 0.0)))
+            out.append({
+                "reaction_id": r.id, "name": r.name, "flux": f,
+                "lower_bound": lb, "upper_bound": ub,
+                "bound": bound, "bound_value": bval, "reduced_cost": rc,
+            })
+        out.sort(key=lambda e: abs(e["reduced_cost"] or 0.0), reverse=True)
+        return out
+
+    def scan_objective(self, session_id: str, scan: list[dict],
+                       response: str | None = None) -> dict:
+        """Scan a response value over a grid of fixed flux values.
 
         `scan` is a list of 1 or 2 dicts {reaction_id, min, max, points}. Each
         scanned reaction is pinned to each grid value (lower=upper) and the model
-        re-optimised; the result is the objective value at every grid point
-        (robustness analysis / phenotypic phase plane). Infeasible points are
-        None. Edits are made inside cobra's context manager, so the session's
-        bounds and objective are left untouched.
+        re-optimised (robustness analysis / phenotypic phase plane).
 
-        Returns {objective, direction, axes:[{reaction_id, values}], values}
-        where `values` is a 1-D list (one axis) or a 2-D grid (two axes,
-        values[i][j] for axes[0].values[i] x axes[1].values[j]).
+        `response` selects what is recorded at each grid point: the objective
+        value (None or "objective", the default) or the flux of a chosen reaction
+        in the objective-optimal solution. Infeasible points are None. Edits are
+        made inside cobra's context manager, so the session is left untouched.
+
+        Returns {objective, direction, response, axes:[{reaction_id, values}],
+        values} where `values` is 1-D (one axis) or a 2-D grid.
         """
         if not 1 <= len(scan) <= 2:
             raise ValueError("scan must specify 1 or 2 reactions")
@@ -695,9 +734,16 @@ class ModelService:
             })
             rxns.append(rxn)
 
+        resp_id = None if response in (None, "", "objective") else response
+        resp_rxn = model.reactions.get_by_id(resp_id) if resp_id else None  # validate
+
         def _solve() -> Optional[float]:
-            val = model.slim_optimize(error_value=float("nan"))  # no warnings on infeasible
-            return None if math.isnan(val) else float(val)
+            # slim_optimize: fast, no warnings on infeasible; reaction.flux reads
+            # the optimised primal so we never build a full Solution.
+            val = model.slim_optimize(error_value=float("nan"))
+            if math.isnan(val):
+                return None
+            return float(resp_rxn.flux) if resp_rxn is not None else float(val)
 
         if len(axes) == 1:
             values: list = []
@@ -719,6 +765,7 @@ class ModelService:
         return {
             "objective": str(model.objective.expression),
             "direction": model.objective.direction,
+            "response": resp_id or "objective",
             "axes": axes,
             "values": values,
         }

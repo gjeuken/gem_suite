@@ -18,7 +18,8 @@ from gem_suite.app import controllers
 def build_scan_figure(result: dict) -> go.Figure:
     axes = result["axes"]
     values = result["values"]
-    obj = result["objective"]
+    response = result.get("response", "objective")
+    zlabel = response if response == "objective" else f"{response} flux"
 
     if len(axes) == 1:
         fig = go.Figure(go.Scatter(
@@ -26,9 +27,9 @@ def build_scan_figure(result: dict) -> go.Figure:
             connectgaps=False, line={"color": "#4c78a8"},
         ))
         fig.update_layout(
-            title=f"Objective vs {axes[0]['reaction_id']}",
+            title=f"{zlabel} vs {axes[0]['reaction_id']}",
             xaxis_title=f"{axes[0]['reaction_id']} flux",
-            yaxis_title="objective",
+            yaxis_title=zlabel,
             template="plotly_white", height=480,
         )
         return fig
@@ -37,13 +38,13 @@ def build_scan_figure(result: dict) -> go.Figure:
     z = [[(v if v is not None else math.nan) for v in row] for row in values]
     fig = go.Figure(go.Surface(
         z=z, x=axes[1]["values"], y=axes[0]["values"],
-        colorbar={"title": "objective"},
+        colorbar={"title": zlabel},
     ))
     fig.update_layout(
-        title="Objective surface",
+        title=f"{zlabel} surface",
         scene={"xaxis_title": f"{axes[1]['reaction_id']} flux",
                "yaxis_title": f"{axes[0]['reaction_id']} flux",
-               "zaxis_title": "objective"},
+               "zaxis_title": zlabel},
         template="plotly_white", height=620,
         margin={"l": 0, "r": 0, "t": 50, "b": 0},
     )
@@ -99,6 +100,17 @@ def layout() -> html.Div:
                           value=[], style={"marginTop": "0.75rem"}),
             _axis_controls(1),
             _axis_controls(2, hidden=True),
+            html.Div(
+                [
+                    html.Label("Plot (response):"),
+                    dcc.Dropdown(id="scan-response",
+                                 options=[{"label": "objective", "value": "objective"}],
+                                 value="objective", clearable=False, searchable=True,
+                                 style={"width": "18rem"}),
+                ],
+                style={"display": "flex", "gap": "0.5rem", "alignItems": "center",
+                       "marginTop": "0.5rem"},
+            ),
             html.Button("Run scan", id="scan-run-btn", n_clicks=0,
                         style={"marginTop": "0.75rem"}),
             html.Div(id="scan-status", style={"marginTop": "0.5rem"}),
@@ -113,14 +125,16 @@ def register_callbacks(app, service, backend) -> None:
         Output("scan-objective-input", "options"),
         Output("scan-rxn1", "options"),
         Output("scan-rxn2", "options"),
+        Output("scan-response", "options"),
         Input("session-store", "data"),
         prevent_initial_call=True,
     )
     def _options(session_id):
         if not session_id:
-            return [], [], []
+            return [], [], [], [{"label": "objective", "value": "objective"}]
         opts = controllers.reaction_options(service, session_id)
-        return opts, opts, opts
+        response_opts = [{"label": "objective", "value": "objective"}] + opts
+        return opts, opts, opts, response_opts
 
     # show/hide the second-axis row
     @app.callback(
@@ -170,9 +184,10 @@ def register_callbacks(app, service, backend) -> None:
         State("scan-rxn2", "value"),
         State("scan-min2", "value"), State("scan-max2", "value"),
         State("scan-points2", "value"),
+        State("scan-response", "value"),
         prevent_initial_call=True,
     )
-    def _run(_n, session_id, two_d, r1, mn1, mx1, p1, r2, mn2, mx2, p2):
+    def _run(_n, session_id, two_d, r1, mn1, mx1, p1, r2, mn2, mx2, p2, response):
         if not session_id:
             return no_update, "Load a model first."
         if not r1:
@@ -184,8 +199,10 @@ def register_callbacks(app, service, backend) -> None:
                 return no_update, "Pick a reaction for flux 2 (or uncheck the second flux)."
             axis2 = {"reaction_id": r2, "min": mn2, "max": mx2, "points": int(p2 or 1)}
         try:
-            result = controllers.run_scan(service, session_id, axis1, axis2)
+            result = controllers.run_scan(service, session_id, axis1, axis2,
+                                          response=response)
         except Exception as exc:
             return no_update, f"Scan failed: {type(exc).__name__}: {exc}"
         n = len(result["values"]) * (len(result["values"][0]) if axis2 else 1)
-        return build_scan_figure(result), f"Scanned {n} point(s)."
+        return (build_scan_figure(result),
+                f"Scanned {n} point(s); plotting {result['response']}.")

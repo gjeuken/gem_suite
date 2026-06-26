@@ -30,8 +30,56 @@ def layout() -> html.Div:
                               debounce=True, style={"width": "20rem"}),
                     html.Span("edit LB/UB cells to change bounds",
                               style={"opacity": 0.6, "marginLeft": "0.5rem"}),
-                ]
+                    html.Button("Export SBML", id="rxn-export-btn", n_clicks=0,
+                                style={"marginLeft": "auto"}),
+                ],
+                style={"display": "flex", "alignItems": "center"},
             ),
+            dcc.Download(id="rxn-download"),
+
+            # -- add a new reaction -------------------------------------------
+            html.Details(
+                [
+                    html.Summary("➕ Add a reaction"),
+                    html.Div(
+                        [
+                            dcc.Input(id="add-rxn-id", type="text",
+                                      placeholder="reaction id", style={"width": "10rem"}),
+                            dcc.Input(id="add-rxn-name", type="text",
+                                      placeholder="name (optional)",
+                                      style={"width": "12rem"}),
+                            dcc.Input(id="add-rxn-eqn", type="text",
+                                      placeholder="a_c + b_c --> c_c   (or <=>)",
+                                      style={"width": "24rem"}),
+                        ],
+                        style={"display": "flex", "gap": "0.5rem",
+                               "marginTop": "0.5rem", "flexWrap": "wrap"},
+                    ),
+                    html.Div(
+                        [
+                            html.Label("LB"),
+                            dcc.Input(id="add-rxn-lb", type="number", placeholder="auto",
+                                      style={"width": "6rem"}),
+                            html.Label("UB"),
+                            dcc.Input(id="add-rxn-ub", type="number", placeholder="auto",
+                                      style={"width": "6rem"}),
+                            dcc.Input(id="add-rxn-gpr", type="text",
+                                      placeholder="GPR (optional)",
+                                      style={"width": "12rem"}),
+                            dcc.Checklist(id="add-rxn-create",
+                                          options=[{"label": " create missing metabolites",
+                                                    "value": "create"}], value=[]),
+                            html.Button("Add reaction", id="add-rxn-btn", n_clicks=0),
+                        ],
+                        style={"display": "flex", "gap": "0.5rem",
+                               "alignItems": "center", "marginTop": "0.5rem",
+                               "flexWrap": "wrap"},
+                    ),
+                    html.Div(id="add-rxn-msg", style={"marginTop": "0.25rem"}),
+                ],
+                style={"margin": "0.5rem 0"},
+            ),
+
             dag.AgGrid(
                 id="reactions-grid",
                 columnDefs=_COLUMN_DEFS,
@@ -59,6 +107,47 @@ def register_callbacks(app, service, backend) -> None:
             return controllers.reaction_rows(service, session_id, pattern)
         except Exception:
             return []
+
+    @app.callback(
+        Output("add-rxn-msg", "children"),
+        Output("reactions-grid", "rowData", allow_duplicate=True),
+        Input("add-rxn-btn", "n_clicks"),
+        State("add-rxn-id", "value"),
+        State("add-rxn-name", "value"),
+        State("add-rxn-eqn", "value"),
+        State("add-rxn-lb", "value"),
+        State("add-rxn-ub", "value"),
+        State("add-rxn-gpr", "value"),
+        State("add-rxn-create", "value"),
+        State("rxn-filter", "value"),
+        State("session-store", "data"),
+        prevent_initial_call=True,
+    )
+    def _add(_n, rxn_id, name, eqn, lb, ub, gpr, create, pattern, session_id):
+        if not session_id:
+            return "Load a model first.", no_update
+        if not eqn or not eqn.strip():
+            return "Enter a reaction equation.", no_update
+        try:
+            rec = controllers.add_reaction(
+                service, session_id, rxn_id, name, eqn, lower=lb, upper=ub,
+                gpr=gpr, create_missing=bool(create))
+        except Exception as exc:
+            return f"Add failed: {type(exc).__name__}: {exc}", no_update
+        rows = controllers.reaction_rows(service, session_id, pattern)
+        return f"Added {rec['after']['id']}: {rec['after']['reaction']}", rows
+
+    @app.callback(
+        Output("rxn-download", "data"),
+        Input("rxn-export-btn", "n_clicks"),
+        State("session-store", "data"),
+        prevent_initial_call=True,
+    )
+    def _export(_n, session_id):
+        if not session_id:
+            return no_update
+        fname, data = controllers.export_sbml(service, session_id)
+        return dcc.send_bytes(data, fname)
 
     @app.callback(
         Output("reactions-msg", "children"),

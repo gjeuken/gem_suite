@@ -180,6 +180,31 @@ def test_scan_objective_2d(service: ModelService, session: str):
     assert vals[0][0] > 0.8
 
 
+def test_scan_response_reaction_flux(service: ModelService, session: str):
+    # default response is the objective
+    obj = service.scan_objective(
+        session, [{"reaction_id": "EX_glc__D_e", "min": -10, "max": -2, "points": 4}])
+    assert obj["response"] == "objective"
+
+    # response = a reaction's flux: CO2 secretion as glucose uptake varies
+    co2 = service.scan_objective(
+        session, [{"reaction_id": "EX_glc__D_e", "min": -10, "max": -2, "points": 4}],
+        response="EX_co2_e")
+    assert co2["response"] == "EX_co2_e"
+    assert all(v is not None for v in co2["values"])
+    assert all(v > 0 for v in co2["values"])               # CO2 is secreted (positive)
+    assert co2["values"] != obj["values"]                  # a different series
+    # less glucose -> less CO2 secreted (monotonic with carbon in)
+    assert co2["values"] == sorted(co2["values"], reverse=True)
+
+
+def test_scan_response_unknown_reaction_raises(service: ModelService, session: str):
+    with pytest.raises(KeyError):
+        service.scan_objective(
+            session, [{"reaction_id": "EX_glc__D_e", "min": -10, "max": -2, "points": 3}],
+            response="NOPE")
+
+
 def test_scan_objective_does_not_mutate_session(service: ModelService, session: str):
     before = service.get_reaction(session, "EX_glc__D_e")
     service.scan_objective(
@@ -211,6 +236,33 @@ def test_pfba_loopless(service: ModelService, session: str):
     res = service.pfba(session, loopless=True)
     assert res.status == "optimal"
     assert math.isclose(res.objective_value, GROWTH, rel_tol=1e-4)
+
+
+def test_binding_constraints_fba(service: ModelService, session: str):
+    res = service.fba(session)
+    binding = service.binding_constraints(session, res.fluxes, res.reduced_costs)
+    by_id = {b["reaction_id"]: b for b in binding}
+    # glucose uptake is capped at its lower bound (-10) -> binding "lower"
+    assert "EX_glc__D_e" in by_id
+    glc = by_id["EX_glc__D_e"]
+    assert glc["bound"] == "lower" and glc["bound_value"] == -10.0
+    assert math.isclose(glc["flux"], -10.0, abs_tol=1e-6)
+    # ATPM has a forced maintenance lower bound (8.39) -> binding "lower"
+    assert by_id["ATPM"]["bound"] == "lower"
+    assert math.isclose(by_id["ATPM"]["flux"], by_id["ATPM"]["bound_value"],
+                        abs_tol=1e-6)
+    # no trivial zero-at-zero entries
+    assert not any(abs(b["flux"]) < 1e-9 and abs(b["bound_value"]) < 1e-9
+                   for b in binding)
+    # reduced costs are reported for FBA
+    assert all(b["reduced_cost"] is not None for b in binding)
+
+
+def test_binding_constraints_pfba_no_reduced_costs(service: ModelService, session: str):
+    res = service.pfba(session)
+    binding = service.binding_constraints(session, res.fluxes)
+    assert any(b["reaction_id"] == "EX_glc__D_e" for b in binding)
+    assert all(b["reduced_cost"] is None for b in binding)
 
 
 def test_efm_test_structure(service: ModelService, session: str):

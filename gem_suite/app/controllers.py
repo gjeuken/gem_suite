@@ -84,6 +84,40 @@ def set_bounds(service: ModelService, session_id: str, rxn_id: str,
     return asdict(rec)
 
 
+def add_reaction(service: ModelService, session_id: str, rxn_id: str,
+                 name: str, equation: str, lower: float | None = None,
+                 upper: float | None = None, gpr: str | None = None,
+                 create_missing: bool = False) -> dict:
+    """Add a reaction from a free-text equation (BiGG ids, `-->`/`<=>`).
+
+    Bounds default from reversibility when left blank (reversible -1000..1000,
+    irreversible 0..1000).
+    """
+    from gem_suite.ki_parser import parse_ki_line
+
+    if not (rxn_id or "").strip():
+        raise ValueError("reaction id is required")
+    parsed = parse_ki_line(f"{rxn_id}: {equation}")
+    lb = (-1000.0 if parsed["reversible"] else 0.0) if lower in (None, "") else float(lower)
+    ub = 1000.0 if upper in (None, "") else float(upper)
+    rec = service.add_reaction(
+        session_id, parsed["id"], name or parsed["id"], parsed["metabolites"],
+        lower_bound=lb, upper_bound=ub, gene_reaction_rule=(gpr or None),
+        create_missing_metabolites=create_missing,
+    )
+    return asdict(rec)
+
+
+def export_sbml(service: ModelService, session_id: str) -> tuple[str, bytes]:
+    """Serialize the current (edited) model to SBML; returns (filename, bytes)."""
+    label = service.summary(session_id)["label"]
+    export_dir = tempfile.mkdtemp(prefix="gem_export_")
+    path = os.path.join(export_dir, f"{label}.xml")
+    service.export_model(session_id, path, fmt="sbml")
+    with open(path, "rb") as fh:
+        return f"{label}.xml", fh.read()
+
+
 def current_objective(service: ModelService, session_id: str) -> dict:
     s = service.summary(session_id)
     return {"objective": s["objective"], "direction": s["objective_direction"]}
@@ -108,6 +142,17 @@ def set_objective(service: ModelService, session_id: str, expr: str,
                   direction: str | None = None) -> dict:
     """Set the FBA objective to a reaction id (or linear combination) and sense."""
     service.set_objective(session_id, _parse_objective(expr), direction=direction)
+    return current_objective(service, session_id)
+
+
+def set_objective_combination(service: ModelService, session_id: str,
+                              terms: dict[str, float],
+                              direction: str | None = None) -> dict:
+    """Set the objective to a linear combination {reaction_id: coefficient}."""
+    if not terms:
+        raise ValueError("select at least one reaction")
+    service.set_objective(session_id, {rid: float(c) for rid, c in terms.items()},
+                          direction=direction)
     return current_objective(service, session_id)
 
 
@@ -182,7 +227,11 @@ def _flux_summary(result) -> dict:
 
 
 def run_fba(service: ModelService, session_id: str, loopless: bool = False) -> dict:
-    return _flux_summary(service.fba(session_id, loopless=loopless))
+    result = service.fba(session_id, loopless=loopless)
+    out = _flux_summary(result)
+    out["binding"] = service.binding_constraints(
+        session_id, result.fluxes, result.reduced_costs)
+    return out
 
 
 def run_pfba(service: ModelService, session_id: str, loopless: bool = False) -> dict:
@@ -190,6 +239,8 @@ def run_pfba(service: ModelService, session_id: str, loopless: bool = False) -> 
     out = _flux_summary(result)
     # EFM verdict on the pFBA flux (prefer loopless — loops inflate the support)
     out["efm"] = service.efm_test(session_id, result.fluxes)
+    # pFBA has no meaningful reduced costs on the biological objective
+    out["binding"] = service.binding_constraints(session_id, result.fluxes)
     return out
 
 
@@ -336,10 +387,11 @@ def fva_export(service: ModelService, backend: JobBackend, job_id: str,
 
 
 def run_scan(service: ModelService, session_id: str,
-             axis1: dict, axis2: dict | None = None) -> dict:
-    """Scan the objective over 1 or 2 fixed fluxes (each {reaction_id,min,max,points})."""
+             axis1: dict, axis2: dict | None = None,
+             response: str | None = None) -> dict:
+    """Scan a response (objective or a reaction's flux) over 1 or 2 fixed fluxes."""
     scan = [axis1] + ([axis2] if axis2 else [])
-    return service.scan_objective(session_id, scan)
+    return service.scan_objective(session_id, scan, response=response)
 
 
 def fva_spans(backend: JobBackend, job_id: str, tol: float = 1e-9) -> list[dict]:
