@@ -31,10 +31,12 @@ It is a friendly front-end over two well-established libraries:
 ## Quick start
 
 ```bash
-source /home/gus/envs/gem_suite/bin/activate      # the project's virtualenv
-pip install -e ".[app,strain,dev]"                # if not already installed
-python -m gem_suite.app.main                      # serve at http://127.0.0.1:8050
+python -m venv .venv && source .venv/bin/activate   # create & activate a venv
+pip install -e ".[app,strain,dev]"                  # install with extras
+python -m gem_suite.app.main                        # serve at http://127.0.0.1:8050
 ```
+
+(On Windows: `python -m venv .venv` then `.venv\Scripts\activate`.)
 
 Open the app, **Load** the bundled `tests/data/e_coli_core.xml.gz`, and explore.
 Prefer scripting? `ModelService` is a plain Python API:

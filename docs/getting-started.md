@@ -9,14 +9,32 @@
   - **Gurobi** — much faster, recommended for genome-scale models and strain
     design. Needs a license (academic licenses are free).
 
-## 2. Install
+## 2. Create a virtual environment
 
-The project uses a virtualenv. Activate it and install the package in editable
-mode with the extras you need:
+Work in an isolated environment so the project's dependencies don't clash with
+other Python tools on your machine. From the cloned repository root:
 
 ```bash
-source /home/gus/envs/gem_suite/bin/activate
+# Linux / macOS
+python3 -m venv .venv
+source .venv/bin/activate
 
+# Windows (PowerShell)
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+```
+
+Your shell prompt should now show `(.venv)`. (Conda users can instead run
+`conda create -n gem_suite python=3.11 && conda activate gem_suite`.) To leave the
+environment later, run `deactivate`.
+
+## 3. Install
+
+With the environment **active**, install the package in editable mode with the
+extras you need:
+
+```bash
+pip install --upgrade pip
 pip install -e .                 # core: cobra, optlang, pandas, scipy, pyarrow
 pip install -e ".[app]"          # + Dash front-end (dash, dash-ag-grid)
 pip install -e ".[strain]"       # + StrainDesign (strain-design tab)
@@ -27,7 +45,7 @@ pip install -e ".[dev]"          # + pytest (run the test suite)
 pip install -e ".[app,strain,gurobi,dev]"
 ```
 
-## 3. The Gurobi license (optional)
+## 4. The Gurobi license (optional)
 
 If you have a `gurobi.lic`, drop it in the **repository root**. On import,
 `gem_suite` points `GRB_LICENSE_FILE` at it automatically (it uses `setdefault`,
@@ -38,7 +56,7 @@ so an environment variable you set yourself still wins). The bundled license is
   node-locked) and **compatible with the installed `gurobipy` major version**.
 - No license / wrong machine? Use GLPK: `export GEM_SUITE_SOLVER=glpk`.
 
-## 4. Run the app
+## 5. Run the app
 
 ```bash
 python -m gem_suite.app.main        # or the console script:  gem-suite-app
@@ -51,7 +69,7 @@ This serves the Dash app at **http://127.0.0.1:8050**.
   `session_id` (and a `job_id` for long jobs). Loading a model, editing it, and
   running analyses all happen in one in-memory session.
 
-## 5. Or use it as a library
+## 6. Or use it as a library
 
 `ModelService` is completely UI-free — drive it from a script or notebook:
 
@@ -69,7 +87,7 @@ print(svc.fba(sid).objective_value)     # lower growth
 svc.reset(sid)                          # back to as-loaded
 ```
 
-## 6. Run the tests
+## 7. Run the tests
 
 ```bash
 pytest            # ~165 tests on e_coli_core with GLPK (no Gurobi needed)
