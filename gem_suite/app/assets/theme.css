@@ -1,0 +1,23 @@
+/* GEM Suite theme: light-gray app, white cards, emerald accent. */
+body {
+    background-color: #EFEFF1;
+    margin: 0;
+    color: #0F2A24;
+}
+
+.gs-header {
+    background: #ffffff;
+    border-bottom: 3px solid #10B981;   /* emerald accent */
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    margin: 0.75rem 0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.card {
+    background: #ffffff;
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 0.75rem 0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.10);
+}

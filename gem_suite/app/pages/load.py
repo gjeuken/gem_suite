@@ -4,8 +4,9 @@ from __future__ import annotations
 from dash import Input, Output, State, html, dcc, no_update, callback_context
 
 from gem_suite.app import controllers
+from gem_suite.data import example_model_path
 
-_DEFAULT = "tests/data/e_coli_core.xml.gz"
+_DEFAULT = example_model_path()      # bundled e_coli_core demo (works after install)
 
 
 def _summary_text(out: dict) -> str:

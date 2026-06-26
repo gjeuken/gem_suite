@@ -36,6 +36,11 @@ dev = ["pytest>=8"]
 [tool.setuptools.packages.find]
 include = ["gem_suite*"]
 
+[tool.setuptools.package-data]
+# ship the Dash assets (logos + theme) and the bundled example model in the wheel
+"gem_suite.app" = ["assets/*"]
+"gem_suite.data" = ["*.xml.gz"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

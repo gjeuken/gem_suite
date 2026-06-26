@@ -30,21 +30,32 @@ It is a friendly front-end over two well-established libraries:
 
 ## Quick start
 
+Install it as a standalone command with [pipx](https://pipx.pypa.io/) — no clone,
+no license, runs on the bundled **GLPK** solver:
+
 ```bash
-python -m venv .venv && source .venv/bin/activate   # create & activate a venv
-pip install -e ".[app,strain,dev]"                  # install with extras
-python -m gem_suite.app.main                        # serve at http://127.0.0.1:8050
+pipx install "gem_suite[app,strain] @ git+https://github.com/gjeuken/gem_suite.git"
+gem-suite-app        # serves at http://127.0.0.1:8050
 ```
 
-(On Windows: `python -m venv .venv` then `.venv\Scripts\activate`.)
+Or from a clone, in a virtual environment:
 
-Open the app, **Load** the bundled `tests/data/e_coli_core.xml.gz`, and explore.
+```bash
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e ".[app,strain,dev]"
+python -m gem_suite.app.main
+```
+
+The app opens with a bundled *E. coli* core model preselected — click **Load** and
+explore. Want the faster Gurobi solver? See
+[getting started §4](docs/getting-started.md) (`GEM_SUITE_SOLVER=gurobi` + a license).
 Prefer scripting? `ModelService` is a plain Python API:
 
 ```python
 from gem_suite import ModelService
+from gem_suite.data import example_model_path
 svc = ModelService(solver="glpk")            # or "gurobi"
-sid = svc.load_model("tests/data/e_coli_core.xml.gz")
+sid = svc.load_model(example_model_path())   # bundled e_coli_core (or any path)
 print(svc.fba(sid).objective_value)          # 0.8739…  (max growth)
 ```
 

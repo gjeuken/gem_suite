@@ -5,10 +5,11 @@ side, and the browser holds only a session_id / job_id string (in dcc.Store) —
 exactly the SPEC seam. FVA still goes through the job layer (LocalProcessBackend)
 so the local->SLURM seam is exercised by the UI.
 
-Solver is configurable via GEM_SUITE_SOLVER (default "gurobi"; the repo ships a
-license that gem_suite points Gurobi at automatically — see _bootstrap_gurobi_
-license in gem_suite/__init__.py). Set GEM_SUITE_SOLVER=glpk to fall back to the
-license-free solver.
+Solver is configurable via the GEM_SUITE_SOLVER environment variable. The default
+is "glpk" — the license-free solver bundled with COBRApy, so the app runs anywhere
+with no setup. Set GEM_SUITE_SOLVER=gurobi for the faster solver (you supply your
+own license: gem_suite picks up a repo-root gurobi.lic when run from source,
+otherwise Gurobi's standard locations such as ~/gurobi.lic / $GRB_LICENSE_FILE).
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ import os
 from gem_suite import ModelService
 from gem_suite.jobs import LocalProcessBackend
 
-SOLVER = os.environ.get("GEM_SUITE_SOLVER", "gurobi")
+SOLVER = os.environ.get("GEM_SUITE_SOLVER", "glpk")
 
 # Module-level singletons used by the default app. Tests build their own.
 SERVICE = ModelService(solver=SOLVER)

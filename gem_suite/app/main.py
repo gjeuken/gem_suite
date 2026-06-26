@@ -9,8 +9,6 @@ Run:  python -m gem_suite.app.main
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from dash import Dash, dcc, html
 
 from gem_suite.app.pages import (
@@ -22,9 +20,9 @@ from gem_suite.app.pages import (
     strain_design,
 )
 
-# Brand assets live in the repo's top-level `logos/` folder; serve it as the
-# Dash assets folder so the SVGs are available at /assets/<name>.
-_LOGOS_DIR = Path(__file__).resolve().parents[2] / "logos"
+# Brand assets (logos + theme.css) ship inside the package at gem_suite/app/assets,
+# which is Dash's default assets folder for Dash(__name__) — so they are found
+# both from a source checkout and from an installed wheel/pipx.
 
 # Custom index so the favicon is the SVG logo (Dash only auto-wires favicon.ico).
 _INDEX = """<!DOCTYPE html>
@@ -49,8 +47,7 @@ def create_app(service=None, backend=None) -> Dash:
         service = service or SERVICE
         backend = backend or BACKEND
 
-    app = Dash(__name__, suppress_callback_exceptions=True,
-               title="GEM Suite", assets_folder=str(_LOGOS_DIR))
+    app = Dash(__name__, suppress_callback_exceptions=True, title="GEM Suite")
     app.index_string = _INDEX
 
     tab_style = {"fontWeight": 400}
