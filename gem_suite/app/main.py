@@ -9,6 +9,8 @@ Run:  python -m gem_suite.app.main
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from dash import Dash, dcc, html
 
 from gem_suite.app.pages import (
@@ -20,6 +22,25 @@ from gem_suite.app.pages import (
     strain_design,
 )
 
+# Brand assets live in the repo's top-level `logos/` folder; serve it as the
+# Dash assets folder so the SVGs are available at /assets/<name>.
+_LOGOS_DIR = Path(__file__).resolve().parents[2] / "logos"
+
+# Custom index so the favicon is the SVG logo (Dash only auto-wires favicon.ico).
+_INDEX = """<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        <link rel="icon" type="image/svg+xml" href="/assets/littlegem_favicon.svg">
+        {%css%}
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>{%config%}{%scripts%}{%renderer%}</footer>
+    </body>
+</html>"""
+
 
 def create_app(service=None, backend=None) -> Dash:
     """Create the Dash app wired to `service`/`backend` (defaults: the singletons)."""
@@ -29,32 +50,42 @@ def create_app(service=None, backend=None) -> Dash:
         backend = backend or BACKEND
 
     app = Dash(__name__, suppress_callback_exceptions=True,
-               title="GEM Suite")
+               title="GEM Suite", assets_folder=str(_LOGOS_DIR))
+    app.index_string = _INDEX
+
+    tab_style = {"fontWeight": 400}
+    tab_selected = {"fontWeight": 700, "color": "#047857",
+                    "borderTop": "2px solid #10B981"}
+
+    def _tab(label, value, page):
+        return dcc.Tab(label=label, value=value, style=tab_style,
+                       selected_style=tab_selected,
+                       children=html.Div(page.layout(), className="card"))
 
     app.layout = html.Div(
         [
             # The browser's entire model handle: a session_id string.
             dcc.Store(id="session-store"),
-            html.H2("GEM Suite"),
+            html.Header(
+                html.Img(src=app.get_asset_url("littlegem_wordmark.svg"),
+                         alt="GEM Suite", style={"height": "56px"}),
+                className="gs-header",
+            ),
             dcc.Tabs(
                 id="tabs",
                 value="tab-load",
                 children=[
-                    dcc.Tab(label="Load", value="tab-load", children=load.layout()),
-                    dcc.Tab(label="Reactions", value="tab-reactions",
-                            children=reactions.layout()),
-                    dcc.Tab(label="Exchanges", value="tab-exchanges",
-                            children=exchanges.layout()),
-                    dcc.Tab(label="Analysis", value="tab-analysis",
-                            children=analysis.layout()),
-                    dcc.Tab(label="Scan", value="tab-scan",
-                            children=scan.layout()),
-                    dcc.Tab(label="Strain design", value="tab-strain",
-                            children=strain_design.layout()),
+                    _tab("Load", "tab-load", load),
+                    _tab("Reactions", "tab-reactions", reactions),
+                    _tab("Exchanges", "tab-exchanges", exchanges),
+                    _tab("Analysis", "tab-analysis", analysis),
+                    _tab("Scan", "tab-scan", scan),
+                    _tab("Strain design", "tab-strain", strain_design),
                 ],
             ),
         ],
-        style={"maxWidth": "1200px", "margin": "0 auto", "fontFamily": "sans-serif"},
+        style={"maxWidth": "1200px", "margin": "0 auto", "fontFamily": "sans-serif",
+               "padding": "0 1rem 2rem"},
     )
 
     for page in (load, reactions, exchanges, analysis, scan, strain_design):

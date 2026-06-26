@@ -201,6 +201,27 @@ def test_scan_objective_validation(service: ModelService, session: str):
             session, [{"reaction_id": "NOPE", "min": 0, "max": 1, "points": 2}])
 
 
+def test_fba_loopless(service: ModelService, session: str):
+    res = service.fba(session, loopless=True)
+    assert res.status == "optimal"
+    assert math.isclose(res.objective_value, GROWTH, rel_tol=1e-4)
+
+
+def test_pfba_loopless(service: ModelService, session: str):
+    res = service.pfba(session, loopless=True)
+    assert res.status == "optimal"
+    assert math.isclose(res.objective_value, GROWTH, rel_tol=1e-4)
+
+
+def test_efm_test_structure(service: ModelService, session: str):
+    res = service.pfba(session, loopless=True)
+    efm = service.efm_test(session, res.fluxes)
+    assert {"is_efm", "n_active", "rank", "nullity"} <= set(efm)
+    assert efm["n_active"] > 0
+    assert efm["nullity"] == efm["n_active"] - efm["rank"]
+    assert isinstance(efm["is_efm"], bool)
+
+
 @pytest.mark.filterwarnings("ignore:Solver status is 'infeasible'")
 def test_fba_reflects_edits(service: ModelService, session: str):
     # removing the sole carbon source makes ATP maintenance unsatisfiable;

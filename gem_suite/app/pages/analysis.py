@@ -157,11 +157,19 @@ def layout() -> html.Div:
                 [
                     html.Button("Run FBA", id="fba-btn", n_clicks=0),
                     html.Button("Run pFBA", id="pfba-btn", n_clicks=0),
+                    dcc.Checklist(id="fast-loopless",
+                                  options=[{"label": " loopless", "value": "loopless"}],
+                                  value=[]),
+                    html.Button("Export CSV", id="fast-export-btn", n_clicks=0),
                 ],
-                style={"display": "flex", "gap": "0.5rem", "marginTop": "0.5rem"},
+                style={"display": "flex", "gap": "0.5rem", "marginTop": "0.5rem",
+                       "alignItems": "center"},
             ),
+            dcc.Store(id="fast-run"),
+            dcc.Download(id="fast-download"),
             html.Div(id="analysis-objective", style={"marginTop": "0.5rem",
                                                      "fontWeight": "bold"}),
+            html.Div(id="efm-display", style={"marginTop": "0.25rem", "opacity": 0.85}),
             dag.AgGrid(id="flux-grid", columnDefs=_FLUX_COLS, rowData=[],
                        defaultColDef={"sortable": True, "resizable": True},
                        style={"height": "35vh"}),
@@ -180,9 +188,11 @@ def layout() -> html.Div:
                                   options=[{"label": " loopless", "value": "loopless"}],
                                   value=[]),
                     html.Button("Submit FVA", id="fva-submit", n_clicks=0),
+                    html.Button("Export CSV", id="fva-export-btn", n_clicks=0),
                 ],
                 style={"display": "flex", "gap": "0.5rem", "alignItems": "center"},
             ),
+            dcc.Download(id="fva-download"),
             html.Div(id="fva-status", style={"marginTop": "0.5rem"}),
             dcc.Graph(id="fva-plot", figure=build_span_figure([])),
             dag.AgGrid(id="fva-grid", columnDefs=_FVA_COLS, rowData=[],
@@ -235,30 +245,72 @@ def register_callbacks(app, service, backend) -> None:
         Output("analysis-objective", "children"),
         Output("flux-grid", "rowData"),
         Output("exchange-plot", "figure"),
+        Output("fast-run", "data"),
+        Output("efm-display", "children"),
         Input("fba-btn", "n_clicks"),
         Input("pfba-btn", "n_clicks"),
+        State("fast-loopless", "value"),
         State("session-store", "data"),
         prevent_initial_call=True,
     )
-    def _fast(_n_fba, _n_pfba, session_id):
+    def _fast(_n_fba, _n_pfba, loopless, session_id):
         empty = build_exchange_flux_figure({"uptake": [], "secretion": []})
         if not session_id:
-            return "Load a model first.", [], empty
-        trigger = callback_context.triggered_id
+            return "Load a model first.", [], empty, None, ""
+        ll = bool(loopless)
         try:
-            if trigger == "pfba-btn":
-                out = controllers.run_pfba(service, session_id)
-                kind = "pFBA"
+            if callback_context.triggered_id == "pfba-btn":
+                out = controllers.run_pfba(service, session_id, loopless=ll)
+                kind, label = "pfba", "pFBA"
             else:
-                out = controllers.run_fba(service, session_id)
-                kind = "FBA"
+                out = controllers.run_fba(service, session_id, loopless=ll)
+                kind, label = "fba", "FBA"
         except Exception as exc:
-            return f"{type(exc).__name__}: {exc}", [], empty
-        text = (f"{kind}: objective = {out['objective_value']:.6g}  "
+            return f"{type(exc).__name__}: {exc}", [], empty, None, ""
+        text = (f"{label}{' (loopless)' if ll else ''}: "
+                f"objective = {out['objective_value']:.6g}  "
                 f"({out['status']}, {out['n_active']} active fluxes)")
         fluxes = {f["reaction"]: f["flux"] for f in out["fluxes"]}
         diagram = controllers.exchange_flux_diagram(service, session_id, fluxes)
-        return text, out["fluxes"], build_exchange_flux_figure(diagram)
+        efm_text = ""
+        if out.get("efm"):
+            e = out["efm"]
+            verdict = "is an EFM ✓" if e["is_efm"] else "is not an EFM"
+            efm_text = (f"pFBA solution {verdict}  "
+                        f"(active {e['n_active']}, rank {e['rank']}, "
+                        f"nullity {e['nullity']})")
+        return (text, out["fluxes"], build_exchange_flux_figure(diagram),
+                {"kind": kind, "loopless": ll}, efm_text)
+
+    @app.callback(
+        Output("fast-download", "data"),
+        Input("fast-export-btn", "n_clicks"),
+        State("fast-run", "data"),
+        State("session-store", "data"),
+        prevent_initial_call=True,
+    )
+    def _export_fast(_n, run, session_id):
+        if not session_id or not run:
+            return no_update
+        fname, data = controllers.analysis_export(
+            service, session_id, run["kind"], run.get("loopless", False))
+        return dcc.send_bytes(data, fname)
+
+    @app.callback(
+        Output("fva-download", "data"),
+        Input("fva-export-btn", "n_clicks"),
+        State("job-store", "data"),
+        State("session-store", "data"),
+        prevent_initial_call=True,
+    )
+    def _export_fva(_n, job_id, session_id):
+        if not session_id or not job_id:
+            return no_update
+        try:
+            fname, data = controllers.fva_export(service, backend, job_id, session_id)
+        except Exception:
+            return no_update
+        return dcc.send_bytes(data, fname)
 
     @app.callback(
         Output("job-store", "data"),

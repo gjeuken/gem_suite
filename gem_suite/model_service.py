@@ -349,6 +349,11 @@ class ModelService:
         s = self._session(session_id)
         return [r.id for r in s.model.reactions if r.objective_coefficient]
 
+    def model_hash(self, session_id: str) -> str:
+        """Stable structural hash of the current (edited) model — for manifests."""
+        from gem_suite.manifest import model_hash
+        return model_hash(self._session(session_id).model)
+
     # -- edits (each returns a ChangeRecord; service maintains a change log) - #
 
     def set_bounds(
@@ -598,35 +603,59 @@ class ModelService:
 
     # -- fast analyses: synchronous (sub-second to seconds) ----------------- #
 
-    def fba(self, session_id: str) -> FluxResult:
+    def fba(self, session_id: str, loopless: bool = False) -> FluxResult:
         s = self._session(session_id)
         solution = s.model.optimize()
+        if loopless and solution.status == "optimal":
+            # CycleFreeFlux: a loopless flux vector with the same objective.
+            from cobra.flux_analysis import loopless_solution
+            solution = loopless_solution(s.model)
         s.last_fluxes = solution.fluxes.to_dict()
+        objective_value = (
+            _objective_value(s.model, s.last_fluxes)
+            if loopless else float(solution.objective_value)
+        )
         return FluxResult(
-            objective_value=float(solution.objective_value),
+            objective_value=objective_value,
             status=solution.status,
             fluxes=dict(s.last_fluxes),
-            reduced_costs=_series_to_dict(solution.reduced_costs),
-            shadow_prices=_series_to_dict(solution.shadow_prices),
+            reduced_costs=None if loopless else _series_to_dict(solution.reduced_costs),
+            shadow_prices=None if loopless else _series_to_dict(solution.shadow_prices),
         )
 
-    def pfba(self, session_id: str) -> FluxResult:
+    def pfba(self, session_id: str, loopless: bool = False) -> FluxResult:
         s = self._session(session_id)
         solution = _cobra_pfba(s.model)
+        if loopless and solution.status == "optimal":
+            from cobra.flux_analysis import loopless_solution
+            solution = loopless_solution(s.model, fluxes=solution.fluxes)
         s.last_fluxes = solution.fluxes.to_dict()
         # cobra's pFBA solution.objective_value is the minimized sum of absolute
         # fluxes; report the biological objective (e.g. growth) instead, computed
         # from the parsimonious fluxes — consistent with fba().
-        objective_value = sum(
-            r.objective_coefficient * s.last_fluxes[r.id]
-            for r in s.model.reactions
-            if r.objective_coefficient
-        )
         return FluxResult(
-            objective_value=float(objective_value),
+            objective_value=_objective_value(s.model, s.last_fluxes),
             status=solution.status,
             fluxes=dict(s.last_fluxes),
         )
+
+    def efm_test(self, session_id: str, fluxes: dict[str, float],
+                 tol: float = 1e-9) -> dict:
+        """Elementary-flux-mode verdict for a flux vector over the current model.
+
+        `fluxes` is a {reaction_id: flux} dict (e.g. a loopless pFBA solution).
+        Returns {is_efm, n_active, rank, nullity, [reason]}.
+        """
+        from cobra.util.array import create_stoichiometric_matrix
+
+        from gem_suite.efm import is_elementary_flux_mode
+
+        s = self._session(session_id)
+        model = s.model
+        n_matrix = create_stoichiometric_matrix(model)        # mets x rxns
+        v = [fluxes.get(r.id, 0.0) for r in model.reactions]  # aligned to columns
+        is_efm, info = is_elementary_flux_mode(n_matrix, v, tol=tol)
+        return {"is_efm": bool(is_efm), **info}
 
     def scan_objective(self, session_id: str, scan: list[dict]) -> dict:
         """Scan the objective value over a grid of fixed flux values.
@@ -703,6 +732,15 @@ class ModelService:
             loopless=loopless,
             processes=processes,
         )
+
+
+def _objective_value(model: cobra.Model, fluxes: dict[str, float]) -> float:
+    """Linear objective value evaluated at `fluxes` (growth for a biomass objective)."""
+    return float(sum(
+        r.objective_coefficient * fluxes.get(r.id, 0.0)
+        for r in model.reactions
+        if r.objective_coefficient
+    ))
 
 
 def _series_to_dict(series) -> Optional[dict[str, float]]:

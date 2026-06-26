@@ -8,13 +8,20 @@ No Dash imports here; no UI knowledge leaks into ModelService.
 from __future__ import annotations
 
 import base64
+import io
+import json
 import os
 import tempfile
+import zipfile
 from dataclasses import asdict
+from datetime import datetime
 from typing import Any
+
+import pandas as pd
 
 from gem_suite import ExchangeDirection, ModelService
 from gem_suite.jobs import JobBackend, JobSpec, JobState, JobType, StrainDesignParams
+from gem_suite.manifest import build_manifest
 
 _ACTIVE = 1e-9   # flux magnitude considered non-zero for display
 
@@ -173,12 +180,16 @@ def _flux_summary(result) -> dict:
     }
 
 
-def run_fba(service: ModelService, session_id: str) -> dict:
-    return _flux_summary(service.fba(session_id))
+def run_fba(service: ModelService, session_id: str, loopless: bool = False) -> dict:
+    return _flux_summary(service.fba(session_id, loopless=loopless))
 
 
-def run_pfba(service: ModelService, session_id: str) -> dict:
-    return _flux_summary(service.pfba(session_id))
+def run_pfba(service: ModelService, session_id: str, loopless: bool = False) -> dict:
+    result = service.pfba(session_id, loopless=loopless)
+    out = _flux_summary(result)
+    # EFM verdict on the pFBA flux (prefer loopless — loops inflate the support)
+    out["efm"] = service.efm_test(session_id, result.fluxes)
+    return out
 
 
 # -- FVA as a job ----------------------------------------------------------- #
@@ -240,6 +251,87 @@ def fva_result_rows(backend: JobBackend, job_id: str) -> list[dict]:
         {"reaction": rid, "minimum": lo, "maximum": hi}
         for rid, (lo, hi) in sorted(result.ranges.items())
     ]
+
+
+# -- CSV export (+ companion manifest, zipped) ------------------------------ #
+
+_FBA_COLUMNS = ["reaction_id", "reaction_name", "subsystem", "flux",
+                "lower_bound", "upper_bound"]
+_FVA_COLUMNS = ["reaction_id", "reaction_name", "min_flux", "max_flux", "span",
+                "fraction_of_optimum"]
+
+
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M")
+
+
+def export_bundle(name: str, rows: list[dict], columns: list[str],
+                  manifest: dict) -> tuple[str, bytes]:
+    """A ZIP of {name}.csv + {name}_manifest.json (a CSV is never orphaned)."""
+    df = pd.DataFrame(rows, columns=columns)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{name}.csv", df.to_csv(index=False))
+        zf.writestr(f"{name}_manifest.json", json.dumps(manifest, indent=2, default=str))
+    return f"{name}.zip", buf.getvalue()
+
+
+def fba_table(service: ModelService, session_id: str, kind: str = "fba",
+              loopless: bool = False) -> dict:
+    result = (service.pfba(session_id, loopless=loopless) if kind == "pfba"
+              else service.fba(session_id, loopless=loopless))
+    rows = [
+        {"reaction_id": r["id"], "reaction_name": r["name"],
+         "subsystem": r["subsystem"], "flux": result.fluxes.get(r["id"], 0.0),
+         "lower_bound": r["lower_bound"], "upper_bound": r["upper_bound"]}
+        for r in service.list_reactions(session_id)
+    ]
+    return {"rows": rows, "status": result.status,
+            "objective_value": result.objective_value}
+
+
+def fva_table(service: ModelService, backend: JobBackend, job_id: str,
+              session_id: str) -> dict:
+    result = backend.result(job_id)
+    names = {r["id"]: r["name"] for r in service.list_reactions(session_id)}
+    rows = [
+        {"reaction_id": rid, "reaction_name": names.get(rid, ""),
+         "min_flux": lo, "max_flux": hi, "span": hi - lo,
+         "fraction_of_optimum": result.fraction_of_optimum}
+        for rid, (lo, hi) in sorted(result.ranges.items())
+    ]
+    return {"rows": rows, "status": result.status,
+            "fraction_of_optimum": result.fraction_of_optimum,
+            "loopless": result.loopless}
+
+
+def analysis_export(service: ModelService, session_id: str, kind: str,
+                    loopless: bool = False) -> tuple[str, bytes]:
+    label = service.summary(session_id)["label"]
+    tab = fba_table(service, session_id, kind, loopless)
+    manifest = build_manifest(
+        operation=kind, model_label=label,
+        model_hash=service.model_hash(session_id), solver=service.solver,
+        status=tab["status"], params={"loopless": loopless},
+        extra={"objective_value": tab["objective_value"]},
+    )
+    return export_bundle(f"{label}_{kind}_{_timestamp()}", tab["rows"],
+                         _FBA_COLUMNS, manifest)
+
+
+def fva_export(service: ModelService, backend: JobBackend, job_id: str,
+               session_id: str) -> tuple[str, bytes]:
+    label = service.summary(session_id)["label"]
+    tab = fva_table(service, backend, job_id, session_id)
+    manifest = build_manifest(
+        operation="fva", model_label=label,
+        model_hash=service.model_hash(session_id), solver=service.solver,
+        status=tab["status"],
+        params={"fraction_of_optimum": tab["fraction_of_optimum"],
+                "loopless": tab["loopless"]},
+    )
+    return export_bundle(f"{label}_fva_{_timestamp()}", tab["rows"],
+                         _FVA_COLUMNS, manifest)
 
 
 def run_scan(service: ModelService, session_id: str,

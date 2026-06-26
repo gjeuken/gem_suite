@@ -232,6 +232,53 @@ def test_current_objective(service, session):
     assert obj["direction"] == "max"
 
 
+def test_run_pfba_includes_efm(service, session):
+    out = controllers.run_pfba(service, session)
+    assert "efm" in out and "is_efm" in out["efm"]
+    assert out["efm"]["nullity"] == out["efm"]["n_active"] - out["efm"]["rank"]
+
+
+def test_fba_table_and_export_bundle(service, session):
+    import io
+    import zipfile
+
+    tab = controllers.fba_table(service, session, "fba")
+    assert len(tab["rows"]) == 95
+    assert set(tab["rows"][0]) == {"reaction_id", "reaction_name", "subsystem",
+                                   "flux", "lower_bound", "upper_bound"}
+    fname, data = controllers.analysis_export(service, session, "fba")
+    assert fname.endswith(".zip")
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    names = zf.namelist()
+    assert any(n.endswith(".csv") for n in names)
+    assert any(n.endswith("_manifest.json") for n in names)
+    csv = zf.read(next(n for n in names if n.endswith(".csv"))).decode()
+    assert csv.splitlines()[0] == \
+        "reaction_id,reaction_name,subsystem,flux,lower_bound,upper_bound"
+
+
+def test_fva_table_and_export(service, session, backend, tmp_path):
+    import io
+    import zipfile
+
+    job_id = controllers.submit_fva(service, backend, session,
+                                    reaction_list=["PFK", "PGI"],
+                                    export_dir=str(tmp_path))
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        if controllers.job_status(backend, job_id)["done"]:
+            break
+        time.sleep(0.05)
+    tab = controllers.fva_table(service, backend, job_id, session)
+    assert set(tab["rows"][0]) == {"reaction_id", "reaction_name", "min_flux",
+                                   "max_flux", "span", "fraction_of_optimum"}
+    fname, data = controllers.fva_export(service, backend, job_id, session)
+    assert fname.endswith(".zip")
+    names = zipfile.ZipFile(io.BytesIO(data)).namelist()
+    assert any(n.endswith(".csv") for n in names)
+    assert any(n.endswith("_manifest.json") for n in names)
+
+
 def test_set_objective_changes_fba(service, session):
     out = controllers.set_objective(service, session, "ATPM")
     assert "ATPM" in out["objective"]

@@ -12,10 +12,17 @@ A local tool to:
 - load a GEM (SBML / JSON / MAT) and inspect structure
 - edit reaction bounds; add and remove reactions; change the objective
 - classify import/export (and demand/sink) reactions and toggle them on/off
-- run FBA, parsimonious FBA, and FVA
+- run FBA, parsimonious FBA (pFBA), and FVA; export each to CSV
 - (later) strain design: compute the gene/reaction knock-outs **and knock-ins**
   required to reach a metabolic-engineering goal (target coupled to growth, or a
-  yield enforced)
+  yield enforced), with post-run verification and an EFM check
+
+> **Naming:** any reference to "dfba" in correspondence means **pFBA**
+> (parsimonious FBA), not dynamic FBA. The EFM test runs on the pFBA flux vector.
+
+The strain-design UI, verification, EFM test, CSV export, and styling are
+specified in detail in `SPEC_strain_design_addendum.md` (milestone 6). This file
+is the high-level source of truth; the addendum is its expansion.
 
 ## Scope and constraints
 
@@ -30,6 +37,20 @@ A local tool to:
   with no change to the calling code. Do not build cluster orchestration now —
   build the seam for it.
 
+### Cross-cutting requirements (apply across analysis and strain design)
+
+- **Run manifest.** Every analysis or design run persists a JSON manifest:
+  model label + structural hash, the operation and its parameters, solver, time
+  limit, package versions, and (for designs) modules, KO/KI candidates and costs,
+  interventions, verification results, and EFM verdict. CSV exports are written
+  with a companion manifest so a result is never orphaned from its conditions.
+- **Solver status is always surfaced.** Report optimal / time-limit / infeasible
+  explicitly. For strain design, distinguish "infeasible" from "not found within
+  the time limit" and offer a one-click relaxation (raise max size, drop a
+  module). Never present a silent empty result.
+- **Loopless toggle** on FBA, pFBA, FVA, and the design-verification LP. Required
+  input for a trustworthy EFM test (loops inflate the support).
+
 ## Architecture
 
 ```
@@ -40,7 +61,7 @@ JobSpec (JSON, references model by PATH) --> JobBackend
                                               |-- LocalProcessBackend  (now)
                                               |-- SlurmBackend         (later, stub)
                                               `-- runners: run_fva, run_strain_design
-Frontend (Dash or Panel)  -- holds only session_id + job_id, submits & polls
+Frontend (Dash)  -- holds only session_id + job_id, submits & polls
 ```
 
 ### Decisions already fixed (in the contract files)
@@ -129,12 +150,19 @@ Pin in `pyproject.toml`.
    result as parquet. `SlurmBackend` left as a conforming stub.
 5. **Frontend** over 1–4: model load, editable reactions table, exchanges panel
    with toggles, analysis panel (FBA/pFBA inline, FVA as a job with progress).
-6. **Strain design:** `strain_design.py` + `runners.run_strain_design`; MCS
-   first (KO only), then knock-ins via candidate DB, then OptKnock/OptCouple.
-   Wire a strain-design page that submits a job and renders the solution sets.
+   Add: **CSV export** for FBA/pFBA/FVA (+ manifest), a **loopless toggle**, the
+   **EFM verdict** on the pFBA solution, **light-gray app background with white
+   cards**, and **bold active tab / normal inactive tabs**. Surface solver status.
+6. **Strain design** (see `SPEC_strain_design_addendum.md` for the full spec):
+   `strain_design.py` + `runners.run_strain_design`; MCS first (KO only), then
+   knock-ins via the candidate DB, then OptKnock/OptCouple. Dynamic suppress/
+   protect cards with live validation; goal-preset library; KI paste box; a job
+   that submits and renders solutions; **post-run per-constraint verification**
+   (protect feasible, suppress infeasible) and **EFM check**; per-run manifest.
 
 ## Definition of done per milestone
 
 Each milestone: implemented against the contract, unit-tested on `e_coli_core`,
 no UI knowledge leaked into `ModelService` or `jobs`, and `JobSpec`/`JobStatus`
-remain JSON round-trippable.
+remain JSON round-trippable. Every run writes a manifest. For milestone 6, every
+goal preset and the EFM test ship with passing tests (see the addendum).
