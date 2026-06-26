@@ -116,7 +116,31 @@ def read_strain_design_json(path: str):
         approach=data["approach"],
         gene_level=data["gene_level"],
         solutions=[StrainDesignSolution(**s) for s in data["solutions"]],
+        message=data.get("message", ""),
     )
+
+
+def manifest_path_for(result_path: str) -> str:
+    """Companion manifest path next to a strain-design result artifact."""
+    return (result_path[:-5] + "_manifest.json" if result_path.endswith(".json")
+            else result_path + ".manifest.json")
+
+
+def write_strain_design_manifest(spec: JobSpec, result, result_path: str) -> str:
+    """Persist a per-run manifest beside the design result (reproducibility)."""
+    from gem_suite.manifest import build_manifest, model_hash, write_manifest
+    from gem_suite.model_service import read_model_file
+
+    man = build_manifest(
+        operation="strain_design",
+        model_label=spec.label or "model",
+        model_hash=model_hash(read_model_file(spec.model_path)),
+        solver=spec.solver,
+        status=result.status,
+        params=spec.params,
+        extra={"solutions": [asdict(s) for s in result.solutions]},
+    )
+    return write_manifest(man, manifest_path_for(result_path))
 
 
 # --------------------------------------------------------------------------- #
@@ -131,7 +155,10 @@ def execute_job(spec: JobSpec, result_path: str) -> str:
     if spec.job_type == JobType.FVA:
         return write_fva_parquet(run_fva(spec), result_path)
     if spec.job_type == JobType.STRAIN_DESIGN:
-        return write_strain_design_json(run_strain_design(spec), result_path)
+        result = run_strain_design(spec)
+        write_strain_design_json(result, result_path)
+        write_strain_design_manifest(spec, result, result_path)   # companion manifest
+        return result_path
     raise ValueError(f"Unknown job_type: {spec.job_type!r}")
 
 

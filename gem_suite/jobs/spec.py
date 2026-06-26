@@ -36,11 +36,17 @@ class StrainDesignParams:
     target to growth or to enforce a yield. Knock-ins are supplied via a
     candidate database of addable reactions (`ki_database`).
     """
-    target_reaction: str
+    target_reaction: str | None = None    # legacy convenience path (target-based MCS)
     approach: str = "MCS"                 # "MCS" | "OptKnock" | "RobustKnock" | "OptCouple"
+    # Primary input: explicit suppress/protect modules with free-text constraints.
+    #   [{"type": "suppress"|"protect", "constraints": ["<lhs> <=|>=|= <rhs>", ...]}]
+    modules: list[dict] | None = None
     ko_candidates: list[str] | None = None    # reactions/genes allowed to be removed
-    ki_candidates: list[str] | None = None    # reactions allowed to be added (knock-in)
+    ki_candidates: list[str] | None = None    # existing-reaction ids allowed as knock-ins
     ki_database: str | None = None            # path to universal / KEGG-derived SBML
+    # Pasted knock-in reactions to add as addable candidates:
+    #   [{"id", "metabolites": {met: coeff}, "reversible": bool, "equation": str}]
+    ki_reactions: list[dict] | None = None
     gene_level: bool = True                   # gene KOs vs reaction KOs
     max_solutions: int = 1
     max_size: int | None = None               # cut-set size cap; None = unbounded (explodes)

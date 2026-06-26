@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import os
+import re
 import tempfile
 import zipfile
 from dataclasses import asdict
@@ -357,61 +358,163 @@ def fva_spans(backend: JobBackend, job_id: str, tol: float = 1e-9) -> list[dict]
     return rows
 
 
+# -- strain design: presets, validation, KI parsing ------------------------ #
+
+def preset_options() -> list[dict]:
+    from gem_suite.presets import PRESETS
+    return [{"label": p.label, "value": p.key} for p in PRESETS]
+
+
+def preset_note(key: str) -> str:
+    from gem_suite.presets import get_preset
+    return get_preset(key).notes
+
+
+def resolve_preset(service: ModelService, session_id: str, key: str,
+                   product: str, substrate: str, ymin: float) -> dict:
+    """Resolve a preset into a module list using the model's growth reaction."""
+    from gem_suite.presets import resolve_preset as _resolve
+    growth = (service.objective_reactions(session_id) or ["BIOMASS"])[0]
+    return _resolve(key, sub=substrate, prod=product, ymin=ymin, growth=growth)
+
+
+def _parse_ineq(text: str) -> tuple[str, float] | None:
+    """Return (operator, rhs) for 'lhs <=|>=|= rhs', or None if unparseable."""
+    op = next((o for o in ("<=", ">=") if o in text), "=" if "=" in text else None)
+    if op is None:
+        return None
+    _, _, rhs = text.partition(op)
+    try:
+        return op, float(rhs.strip())
+    except ValueError:
+        return None
+
+
+def validate_constraint(reaction_ids: set[str], text: str) -> dict:
+    """Validate one free-text inequality row. {ok, error, warnings}."""
+    text = (text or "").strip()
+    if not text:
+        return {"ok": False, "error": "empty constraint", "warnings": []}
+    parsed = _parse_ineq(text)
+    if parsed is None:
+        return {"ok": False, "error": "expected 'lhs <=|>=|= number'", "warnings": []}
+    lhs = text.split(parsed[0])[0]
+    ids = re.findall(r"[A-Za-z_]\w*", lhs)
+    warnings = []
+    if any(i.startswith("EX_") for i in ids):
+        warnings.append("exchange term: uptake is negative, secretion positive")
+    unknown = [i for i in ids if i not in reaction_ids]
+    if unknown:
+        return {"ok": False, "error": f"unknown reaction id(s): {', '.join(unknown)}",
+                "warnings": warnings}
+    return {"ok": True, "error": None, "warnings": warnings}
+
+
+def suppress_needs_aux(constraints: list[str]) -> bool:
+    """True if the suppress region includes the v=0 vector (the trivial trap)."""
+    def zero_satisfies(c: str) -> bool:
+        parsed = _parse_ineq(c)
+        if parsed is None:
+            return True
+        op, rhs = parsed
+        if op == ">=":
+            return 0.0 >= rhs
+        if op == "<=":
+            return 0.0 <= rhs
+        return rhs == 0.0
+    return all(zero_satisfies(c) for c in constraints)
+
+
+def parse_ki(service: ModelService, session_id: str, text: str) -> dict:
+    """Parse + validate a KI paste block against the session model."""
+    from gem_suite.ki_parser import parse_ki_block
+    reactions, errors = parse_ki_block(text)
+    val = (service.validate_knockins(session_id, reactions)
+           if reactions else {"errors": [], "warnings": []})
+    return {"reactions": reactions, "errors": errors + val["errors"],
+            "warnings": val["warnings"]}
+
+
 # -- strain design as a job ------------------------------------------------- #
 
-def submit_strain_design(
-    service: ModelService,
-    backend: JobBackend,
-    session_id: str,
-    target_reaction: str,
-    approach: str = "MCS",
-    gene_level: bool = True,
-    max_size: int | None = None,
-    max_solutions: int = 1,
-    min_growth: float | None = None,
-    min_yield: float | None = None,
-    ko_candidates: list[str] | None = None,
-    ki_candidates: list[str] | None = None,
-    ki_database: str | None = None,
-    export_dir: str | None = None,
-) -> str:
-    """Export the current edited model and submit a strain-design job for it."""
+def submit_strain_design(service: ModelService, backend: JobBackend,
+                         session_id: str, store: dict,
+                         export_dir: str | None = None) -> str:
+    """Submit a strain-design job from the modules Store (the JSON IS the input)."""
     export_dir = export_dir or tempfile.mkdtemp(prefix="gem_app_")
     os.makedirs(export_dir, exist_ok=True)
     model_path = os.path.join(export_dir, f"{session_id}_sd.xml")
     service.export_model(session_id, model_path, fmt="sbml")
 
     params = StrainDesignParams(
-        target_reaction=target_reaction,
-        approach=approach,
-        gene_level=gene_level,
-        max_size=max_size,
-        max_solutions=max_solutions,
-        min_growth=min_growth,
-        min_yield=min_yield,
-        ko_candidates=ko_candidates,
-        ki_candidates=ki_candidates,
-        ki_database=ki_database,
+        approach=store.get("approach", "MCS"),
+        modules=store.get("modules"),
+        ko_candidates=store.get("ko_candidates"),
+        ki_reactions=store.get("ki_reactions"),
+        ki_candidates=store.get("ki_candidates"),
+        gene_level=bool(store.get("gene_level", True)),
+        max_solutions=int(store.get("max_solutions", 1)),
+        max_size=store.get("max_size"),
+        time_limit_s=store.get("time_limit_s"),
+        target_reaction=store.get("target_reaction"),
+        min_growth=store.get("min_growth"),
+        min_yield=store.get("min_yield"),
     )
     spec = JobSpec(
         job_type=JobType.STRAIN_DESIGN,
         model_path=model_path,
         params=params.to_params(),
         solver=service.solver,
-        label=f"sd:{approach}:{target_reaction}",
+        label=store.get("model_label") or f"sd:{params.approach}",
     )
     return backend.submit(spec)
 
 
 def strain_design_solution_rows(backend: JobBackend, job_id: str) -> list[dict]:
     result = backend.result(job_id)
-    return [
-        {
+    rows = []
+    for i, sol in enumerate(result.solutions):
+        n = len(sol.verification)
+        passed = sum(1 for v in sol.verification if v["passed"])
+        rows.append({
             "#": i + 1,
             "level": sol.level,
             "cost": sol.cost,
             "knockouts": ", ".join(sol.knockouts),
             "knockins": ", ".join(sol.knockins),
-        }
-        for i, sol in enumerate(result.solutions)
-    ]
+            "verification": (f"{'✓' if passed == n else '✗'} {passed}/{n}"
+                             if n else "—"),
+            "efm": ("EFM" if sol.efm and sol.efm["is_efm"]
+                    else "not EFM" if sol.efm else "—"),
+        })
+    return rows
+
+
+def strain_design_verification_rows(backend: JobBackend, job_id: str,
+                                    solution_index: int = 0) -> list[dict]:
+    result = backend.result(job_id)
+    if solution_index >= len(result.solutions):
+        return []
+    out = []
+    for v in result.solutions[solution_index].verification:
+        out.append({
+            "module": v["module_type"],
+            "constraints": " ; ".join(v["constraints"]),
+            "result": "PASS" if v["passed"] else "FAIL",
+            "objective": v["objective"],
+        })
+    return out
+
+
+def strain_design_manifest_download(backend: JobBackend,
+                                    job_id: str) -> tuple[str, bytes] | None:
+    """The companion manifest written next to the design result."""
+    from gem_suite.jobs.runners import manifest_path_for
+    st = backend.status(job_id)
+    if st.state != JobState.SUCCEEDED or not st.result_path:
+        return None
+    path = manifest_path_for(st.result_path)
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as fh:
+        return os.path.basename(path), fh.read()

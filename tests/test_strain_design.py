@@ -163,15 +163,55 @@ def test_strain_design_job_end_to_end(backend, model_path):
     assert result.solutions
 
 
+# -- modules-based design + verification ----------------------------------- #
+
+def test_modules_design_verifies(core):
+    params = StrainDesignParams(
+        approach="MCS", gene_level=False, ko_candidates=KO_CANDS,
+        max_size=3, max_solutions=2,
+        modules=[
+            {"type": "suppress",
+             "constraints": ["Biomass_Ecoli_core >= 0.05", "EX_etoh_e <= 0",
+                             "EX_glc__D_e <= -0.1"]},
+            {"type": "protect", "constraints": ["Biomass_Ecoli_core >= 0.05"]},
+        ],
+    )
+    result = design_strains(core, params, solver="glpk")
+    assert result.status == "optimal" and result.solutions
+    for sol in result.solutions:
+        kinds = {v["module_type"]: v["passed"] for v in sol.verification}
+        assert kinds == {"suppress": True, "protect": True}
+        assert sol.efm is not None and "is_efm" in sol.efm
+
+
+def test_verification_detects_wrong_design(core):
+    from gem_suite.strain_design import StrainDesignSolution, verify_design
+
+    params = StrainDesignParams(approach="MCS", gene_level=False, modules=[
+        {"type": "suppress",
+         "constraints": ["Biomass_Ecoli_core >= 0.05", "EX_etoh_e <= 0",
+                         "EX_glc__D_e <= -0.1"]}])
+    empty = StrainDesignSolution(knockouts=[], knockins=[], cost=0.0, level="reaction")
+    rows = verify_design(core, params, empty, "glpk")
+    # with no knockouts the suppress region is still feasible -> FAIL
+    assert rows[0]["module_type"] == "suppress" and rows[0]["passed"] is False
+
+
 # -- app controllers -------------------------------------------------------- #
 
 def test_submit_strain_design_controller(service, session, backend, tmp_path):
-    job_id = controllers.submit_strain_design(
-        service, backend, session,
-        target_reaction="EX_etoh_e", approach="MCS", gene_level=False,
-        ko_candidates=KO_CANDS, min_growth=0.05, min_yield=0.0,
-        max_size=3, max_solutions=3, export_dir=str(tmp_path),
-    )
+    store = {
+        "modules": [
+            {"type": "suppress",
+             "constraints": ["Biomass_Ecoli_core >= 0.05", "EX_etoh_e <= 0",
+                             "EX_glc__D_e <= -0.1"]},
+            {"type": "protect", "constraints": ["Biomass_Ecoli_core >= 0.05"]},
+        ],
+        "approach": "MCS", "gene_level": False, "ko_candidates": KO_CANDS,
+        "max_size": 3, "max_solutions": 3,
+    }
+    job_id = controllers.submit_strain_design(service, backend, session, store,
+                                              export_dir=str(tmp_path))
     deadline = time.time() + 180
     while time.time() < deadline:
         if controllers.job_status(backend, job_id)["done"]:
@@ -179,5 +219,9 @@ def test_submit_strain_design_controller(service, session, backend, tmp_path):
         time.sleep(0.05)
     rows = controllers.strain_design_solution_rows(backend, job_id)
     assert rows
-    assert {"#", "level", "cost", "knockouts", "knockins"} == set(rows[0])
+    assert {"#", "level", "cost", "knockouts", "knockins", "verification",
+            "efm"} == set(rows[0])
+    # verification ran and passed for the returned designs
+    verif = controllers.strain_design_verification_rows(backend, job_id, 0)
+    assert verif and all(v["result"] == "PASS" for v in verif)
     json.dumps(rows)

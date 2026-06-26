@@ -232,6 +232,38 @@ def test_current_objective(service, session):
     assert obj["direction"] == "max"
 
 
+# -- strain-design validation helpers -------------------------------------- #
+
+def test_validate_constraint(service, session):
+    ids = set(service.reaction_ids(session))
+    assert controllers.validate_constraint(ids, "Biomass_Ecoli_core >= 0.1")["ok"]
+    bad = controllers.validate_constraint(ids, "NOPE_rxn >= 1")
+    assert not bad["ok"] and "unknown" in bad["error"]
+    ex = controllers.validate_constraint(ids, "EX_glc__D_e <= -1")
+    assert ex["ok"] and any("uptake is negative" in w for w in ex["warnings"])
+    assert not controllers.validate_constraint(ids, "Biomass_Ecoli_core 0.1")["ok"]
+
+
+def test_suppress_needs_aux():
+    assert controllers.suppress_needs_aux(["EX_etoh_e <= 0"]) is True      # zero allowed
+    assert controllers.suppress_needs_aux(["EX_glc__D_e <= -0.1"]) is False  # excludes 0
+    assert controllers.suppress_needs_aux(["Biomass_Ecoli_core >= 0.05"]) is False
+
+
+def test_resolve_preset_controller(service, session):
+    resolved = controllers.resolve_preset(service, session, "wgcp",
+                                          "EX_etoh_e", "EX_glc__D_e", 0.2)
+    blob = " ".join(c for m in resolved["modules"] for c in m["constraints"])
+    assert "Biomass_Ecoli_core" in blob and "{" not in blob
+
+
+def test_parse_ki_controller(service, session):
+    out = controllers.parse_ki(service, session, "PFK: a_c --> b_c\nNEW: x_c <=> y_c")
+    ids = [r["id"] for r in out["reactions"]]
+    assert ids == ["PFK", "NEW"]
+    assert any("duplicate" in e for e in out["errors"])     # PFK exists
+
+
 def test_run_pfba_includes_efm(service, session):
     out = controllers.run_pfba(service, session)
     assert "efm" in out and "is_efm" in out["efm"]

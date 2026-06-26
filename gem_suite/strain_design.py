@@ -14,11 +14,14 @@ package (and `gem_suite.jobs`) imports without it installed.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import cobra
 
+from gem_suite.efm import is_elementary_flux_mode
 from gem_suite.jobs.spec import StrainDesignParams
+from gem_suite.ki_parser import add_ki_reactions
 from gem_suite.model_service import read_model_file
 
 # StrainDesign is chatty; keep its logging quiet for library use.
@@ -36,14 +39,19 @@ class StrainDesignSolution:
     knockins: list[str]            # ids added (knock-in reactions)
     cost: float                    # total intervention cost (≈ number of changes)
     level: str                     # "gene" | "reaction"
+    # per-module post-run verification (filled by verify_design); plain dicts so
+    # the result JSON round-trips unchanged.
+    verification: list[dict] = field(default_factory=list)
+    efm: dict | None = None        # EFM verdict on the intervened pFBA flux
 
 
 @dataclass
 class StrainDesignResult:
-    status: str                    # straindesign status, e.g. "optimal"
+    status: str                    # "optimal" | "infeasible" | "time_limit" | ...
     approach: str                  # echoes the requested approach
     gene_level: bool
     solutions: list[StrainDesignSolution] = field(default_factory=list)
+    message: str = ""              # diagnosis (e.g. why no solution) — never silent
 
 
 # --------------------------------------------------------------------------- #
@@ -64,24 +72,50 @@ def _prepare_knockins(model: cobra.Model, params: StrainDesignParams) -> dict | 
     / KEGG-derived SBML). Returns {reaction_id: 1.0} marking them addable, or None
     when there are no knock-ins.
     """
-    if not params.ki_candidates:
-        return None
-    if params.ki_database:
-        db = read_model_file(params.ki_database)
+    cost: dict[str, float] = {}
+
+    # Pasted knock-in reactions (added to the model as addable candidates).
+    if params.ki_reactions:
+        for rid in add_ki_reactions(model, params.ki_reactions):
+            cost[rid] = 1.0
+
+    # Existing-reaction / database knock-in candidates.
+    if params.ki_candidates:
+        if params.ki_database:
+            db = read_model_file(params.ki_database)
+            for rid in params.ki_candidates:
+                if not model.reactions.has_id(rid):
+                    model.add_reactions([db.reactions.get_by_id(rid).copy()])
+        missing = [r for r in params.ki_candidates if not model.reactions.has_id(r)]
+        if missing:
+            raise ValueError(
+                f"knock-in candidates not in model and no ki_database to source: {missing}"
+            )
         for rid in params.ki_candidates:
-            if not model.reactions.has_id(rid):
-                model.add_reactions([db.reactions.get_by_id(rid).copy()])
-    missing = [r for r in params.ki_candidates if not model.reactions.has_id(r)]
-    if missing:
-        raise ValueError(
-            f"knock-in candidates not in model and no ki_database to source them: {missing}"
-        )
-    return {rid: 1.0 for rid in params.ki_candidates}
+            cost[rid] = 1.0
+
+    return cost or None
+
+
+_MODULE_TYPES = {"suppress": "SUPPRESS", "protect": "PROTECT"}
 
 
 def _build_modules(model: cobra.Model, params: StrainDesignParams):
     import straindesign as sd
 
+    # Primary path: explicit suppress/protect modules with free-text constraints.
+    if params.modules:
+        out = []
+        for mod in params.modules:
+            key = mod["type"].lower()
+            if key not in _MODULE_TYPES:
+                raise ValueError(f"unknown module type {mod['type']!r}")
+            module_type = getattr(sd.names, _MODULE_TYPES[key])
+            out.append(sd.SDModule(model, module_type,
+                                   constraints=list(mod["constraints"])))
+        return out
+
+    # Legacy convenience path: build modules from target_reaction + thresholds.
     biomass = _objective_reaction(model)
     target = params.target_reaction
     approach = params.approach.lower()
@@ -134,6 +168,89 @@ def _to_result(sols, params: StrainDesignParams) -> StrainDesignResult:
 
 
 # --------------------------------------------------------------------------- #
+# Post-run verification + EFM
+# --------------------------------------------------------------------------- #
+
+def _intervened_model(model: cobra.Model, params: StrainDesignParams,
+                      solution: StrainDesignSolution, solver: str) -> cobra.Model:
+    """Base model with the solution's KIs added and its KOs applied."""
+    m = model.copy()
+    m.solver = solver
+    chosen = set(solution.knockins)
+    add_ki_reactions(m, [d for d in (params.ki_reactions or []) if d["id"] in chosen])
+    if solution.level == "gene":
+        for gid in solution.knockouts:
+            if m.genes.has_id(gid):
+                m.genes.get_by_id(gid).knock_out()
+    else:
+        for rid in solution.knockouts:
+            if m.reactions.has_id(rid):
+                m.reactions.get_by_id(rid).bounds = (0.0, 0.0)
+    return m
+
+
+def _feasible_with(model: cobra.Model, constraints: list[str]):
+    """Is the model feasible with these extra linear constraints? -> (feasible, obj)."""
+    import straindesign as sd
+
+    m = model.copy()
+    extra = []
+    for coeff, sense, rhs in sd.parse_constraints(constraints, [r.id for r in m.reactions]):
+        expr = sum(c * m.reactions.get_by_id(rid).flux_expression
+                   for rid, c in coeff.items())
+        lb = rhs if sense in (">=", "=") else None
+        ub = rhs if sense in ("<=", "=") else None
+        extra.append(m.problem.Constraint(expr, lb=lb, ub=ub))
+    if extra:
+        m.add_cons_vars(extra)
+        m.solver.update()
+    val = m.slim_optimize(error_value=float("nan"))
+    feasible = not math.isnan(val)
+    return feasible, (None if not feasible else float(val))
+
+
+def verify_design(model: cobra.Model, params: StrainDesignParams,
+                  solution: StrainDesignSolution, solver: str) -> list[dict]:
+    """Per-module feasibility check on the intervened model.
+
+    PROTECT region must be feasible; SUPPRESS region must be infeasible.
+    """
+    if not params.modules:
+        return []
+    intervened = _intervened_model(model, params, solution, solver)
+    rows: list[dict] = []
+    for mod in params.modules:
+        kind = mod["type"].lower()
+        feasible, obj = _feasible_with(intervened, list(mod["constraints"]))
+        passed = feasible if kind == "protect" else (not feasible)
+        rows.append({
+            "module_type": kind,
+            "constraints": list(mod["constraints"]),
+            "feasible": feasible,
+            "passed": bool(passed),
+            "objective": obj,
+        })
+    return rows
+
+
+def _design_efm(model: cobra.Model, params: StrainDesignParams,
+                solution: StrainDesignSolution, solver: str) -> dict | None:
+    """EFM verdict on the intervened model's loopless pFBA flux."""
+    from cobra.flux_analysis import loopless_solution, pfba
+    from cobra.util.array import create_stoichiometric_matrix
+
+    intervened = _intervened_model(model, params, solution, solver)
+    try:
+        sol = loopless_solution(intervened, fluxes=pfba(intervened).fluxes)
+    except Exception:
+        return None
+    n_matrix = create_stoichiometric_matrix(intervened)
+    v = [sol.fluxes.get(r.id, 0.0) for r in intervened.reactions]
+    is_efm, info = is_elementary_flux_mode(n_matrix, v)
+    return {"is_efm": bool(is_efm), **info}
+
+
+# --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
 
@@ -141,15 +258,27 @@ def design_strains(
     model: cobra.Model,
     params: StrainDesignParams,
     solver: str = "glpk",
+    verify: bool = True,
 ) -> StrainDesignResult:
-    """Compute strain designs for `params` against a COPY of `model`."""
+    """Compute strain designs for `params` against a COPY of `model`.
+
+    When `verify` and modules are given, each solution is verified (protect
+    feasible / suppress infeasible) and gets an EFM verdict on its intervened
+    loopless pFBA flux.
+    """
     import straindesign as sd
 
     work = model.copy()
     work.solver = solver
 
     ki_cost = _prepare_knockins(work, params)
-    modules = _build_modules(work, params)
+    try:
+        modules = _build_modules(work, params)
+    except Exception as exc:
+        # e.g. a suppress/protect region that is already infeasible in the model
+        return StrainDesignResult(status="infeasible", approach=params.approach,
+                                  gene_level=params.gene_level, solutions=[],
+                                  message=str(exc))
 
     kwargs: dict = {
         "sd_modules": modules,
@@ -176,5 +305,16 @@ def design_strains(
     if params.approach.lower() in ("optknock", "robustknock", "optcouple"):
         kwargs["solution_approach"] = sd.names.BEST
 
-    sols = sd.compute_strain_designs(work, **kwargs)
-    return _to_result(sols, params)
+    try:
+        sols = sd.compute_strain_designs(work, **kwargs)
+    except Exception as exc:
+        return StrainDesignResult(status="infeasible", approach=params.approach,
+                                  gene_level=params.gene_level, solutions=[],
+                                  message=str(exc))
+    result = _to_result(sols, params)
+
+    if verify and params.modules:
+        for solution in result.solutions:
+            solution.verification = verify_design(model, params, solution, solver)
+            solution.efm = _design_efm(model, params, solution, solver)
+    return result

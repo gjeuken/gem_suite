@@ -354,6 +354,15 @@ class ModelService:
         from gem_suite.manifest import model_hash
         return model_hash(self._session(session_id).model)
 
+    def reaction_ids(self, session_id: str) -> list[str]:
+        """All reaction ids (cheap; for UI validation)."""
+        return [r.id for r in self._session(session_id).model.reactions]
+
+    def validate_knockins(self, session_id: str, ki_reactions: list[dict]) -> dict:
+        """Orphan/duplicate/balance checks for pasted KIs against the session model."""
+        from gem_suite.ki_parser import validate_kis
+        return validate_kis(ki_reactions, self._session(session_id).model)
+
     # -- edits (each returns a ChangeRecord; service maintains a change log) - #
 
     def set_bounds(
