@@ -79,7 +79,11 @@ A model lives in a server-side **session**; the browser holds only its id. Tabs:
 | **Exchanges** | Classify boundary reactions and open/close uptake/secretion. |
 | **Analysis** | Run FBA/pFBA (inline) and FVA (as a job); see binding constraints, an EFM verdict, a schematic flux diagram; export CSV. |
 | **Scan** | Plot a response (objective or any flux) vs one or two scanned fluxes. |
-| **Strain design** | Build suppress/protect modules (or pick a preset), add knock-in candidates, run a design job, and verify the results. |
+
+> **Strain design is not a tab.** It is implemented and tested, but its MILPs are
+> far too slow to run interactively on a laptop, so it is not exposed in the local
+> UI. It stays available from Python and through the job layer (built to move to
+> SLURM/HPC) — see [Strain design (API only)](#strain-design-api-only) below.
 
 Edits accumulate in the session and are reverted by **reset**. Every analysis can
 write a **run manifest** (a JSON record of model + parameters + versions) so a
@@ -209,68 +213,101 @@ infeasible points appear as gaps. Your session's bounds are **not** modified.
 
 ---
 
-## Strain design
+## Strain design (API only)
 
-The most powerful tab. You describe a metabolic-engineering goal as **modules**,
-the suite computes interventions, and then **verifies** them.
+> **Why there is no tab.** Strain-design problems are NP-hard MILPs. Even on the
+> tiny *E. coli* core model they take seconds; on a genome-scale model they can run
+> for hours. That is not something to run interactively in a browser on a laptop,
+> so the feature is **not exposed in the local UI**. The implementation is complete
+> and tested, and the job layer was built to move it to **SLURM/HPC** — you drive it
+> from Python today. Install the extra first: `pip install -e ".[strain]"`.
 
-### The fast path: goal presets
+You describe a metabolic-engineering goal as **modules**, the library computes
+interventions, and then **verifies** them.
 
-Choose a **design goal** from the dropdown, set the **product** and **substrate**
-exchange reactions and a **minimum yield**, and click **Apply preset**. The preset
-fills in editable suppress/protect cards for you. Available presets map to the
-StrainDesign manual's cases:
+### Modules: suppress and protect
 
-- **wGCP / pGCP** — growth-coupled production (weak/strong),
-- **SUCP** — minimum-yield substrate-uptake coupling,
-- **synthetic lethals** — interventions that prohibit growth,
-- **conditional auxotrophy** — make growth depend on a substrate.
+- **Suppress** = "make these flux states impossible."
+- **Protect** = "keep these flux states possible."
 
-### Building modules by hand
+Each module holds free-text linear inequalities over reaction ids, e.g.
+`EX_etoh_e + 0.2 EX_glc__D_e <= 0` or `Biomass_Ecoli_core >= 0.1`.
 
-- **+ suppress** / **+ protect** add cards. Inside a card, **+ add constraint**
-  adds a free-text linear inequality over reaction ids, e.g.
-  `EX_etoh_e + 0.2 EX_glc__D_e <= 0` or `Biomass_Ecoli_core >= 0.1`.
-- **Live validation** flags unknown reaction ids, reminds you of the exchange sign
-  convention, and warns about the **v = 0 trap**: a suppress region that still
-  allows the all-zero flux vector is meaningless (add a minimum-uptake term).
-- **Suppress** = "make these states impossible." **Protect** = "keep these states
-  possible." The "?" helper shows examples.
+Two traps to remember:
+- **Exchange signs**: uptake is negative, so a yield constraint relies on the
+  substrate term being negative.
+- **The v = 0 trap**: a suppress region that still allows the all-zero flux vector
+  is satisfied trivially and the design is meaningless — include a minimum-uptake
+  term (e.g. `EX_glc__D_e <= -0.1`). `controllers.suppress_needs_aux()` detects this.
 
-### Knock-in candidates
+### Goal presets
 
-Paste reactions to offer as additions, one per line, in the same equation format
-as the Reactions tab (`RXN: a_c + b_c --> c_c`). They're parsed and validated
-(orphan metabolites, duplicate ids, mass/charge balance) and offered to the
-solver as addable interventions.
+`gem_suite.presets` provides ready-made module templates with `{prod}`, `{sub}`,
+`{Ymin}` and `{bm}` placeholders, mapping to the StrainDesign manual's cases:
+**wGCP / pGCP** (growth-coupled production, weak/strong), **SUCP** (substrate-uptake
+coupling), **synthetic lethals**, and **conditional auxotrophy**.
 
-### Settings and running
+```python
+from gem_suite.presets import resolve_preset
+spec = resolve_preset("wgcp", sub="EX_glc__D_e", prod="EX_etoh_e",
+                      ymin=0.2, growth="Biomass_Ecoli_core")
+spec["modules"]        # ready-to-use suppress/protect modules
+```
 
-Choose the **approach** (MCS / OptKnock / RobustKnock / OptCouple), gene- vs
-reaction-level knock-outs, **max size** (cut-set size cap) and **max solutions**
-(both default conservatively — MCS enumeration explodes), an optional time limit
-and KO candidate list. **Submit** runs a background job.
+### Knock-ins
 
-> ⚠️ Strain design is genuinely hard (NP-hard MILPs). Keep max size/solutions
-> small, restrict KO candidates, and prefer Gurobi for genome-scale models.
+Knock-in candidates are written in the same equation format as the Reactions tab
+(`RXN: a_c + b_c --> c_c`) and parsed by `gem_suite.ki_parser`, which validates
+orphan metabolites, duplicate ids and mass/charge balance. They are offered to the
+solver as *addable* interventions (`ki_cost`).
 
-### Results, verification, EFM, manifest
+### Running a design
 
-When the job finishes you get a **solutions table** (knock-outs, knock-ins, cost),
-and for each solution:
+```python
+import cobra
+from gem_suite.data import example_model_path
+from gem_suite.jobs.spec import StrainDesignParams
+from gem_suite.strain_design import design_strains
 
-- a **verification** result — the suite rebuilds the intervened model and checks
-  each module: a **protect** region must stay **feasible**, a **suppress** region
-  must become **infeasible**. The per-constraint pass/fail is shown for solution 1.
-  This catches solver/compression edge cases — cheap insurance on an expensive
-  search.
-- an **EFM** verdict on the intervened solution.
+model = cobra.io.read_sbml_model(example_model_path())
+params = StrainDesignParams(
+    approach="MCS",            # or OptKnock / RobustKnock / OptCouple
+    gene_level=False,
+    ko_candidates=["PFK", "PYK", "NADH16", "CYTBD", "ATPS4r", "FRD7", "SUCDi"],
+    max_size=3, max_solutions=2,          # keep these small — MCS explodes
+    modules=[
+        {"type": "suppress", "constraints": ["Biomass_Ecoli_core >= 0.05",
+                                             "EX_etoh_e <= 0",
+                                             "EX_glc__D_e <= -0.1"]},
+        {"type": "protect",  "constraints": ["Biomass_Ecoli_core >= 0.05"]},
+    ],
+)
+result = design_strains(model, params, solver="glpk")   # "gurobi" is much faster
+for sol in result.solutions:
+    print(sol.knockouts, [v["passed"] for v in sol.verification], sol.efm["is_efm"])
+```
 
-**Download manifest** saves a JSON of the whole run (modules, KO/KI, every
-intervention, verification, EFM, versions) for reproducibility.
+### Results, verification, EFM
 
-If no design is found, the status says so explicitly (distinguishing "infeasible"
-from "not found in the time limit") — never a silent empty result.
+Each solution carries its knock-outs/knock-ins and:
+
+- **verification** — the intervened model is rebuilt and every module re-checked:
+  a **protect** region must stay **feasible**, a **suppress** region must become
+  **infeasible**. Cheap insurance that catches solver and network-compression edge
+  cases on an expensive search.
+- an **EFM** verdict on the intervened (loopless pFBA) flux.
+
+If nothing is found, `result.status` and `result.message` say so explicitly
+(distinguishing "infeasible" from "not found in the time limit") — never a silent
+empty result.
+
+Running it through the job layer (`JobType.STRAIN_DESIGN`) additionally writes a
+**run manifest** beside the result: modules, KO/KI, every intervention,
+verification, EFM and package versions. That is the path that will submit to SLURM
+once `SlurmBackend` is implemented.
+
+> ⚠️ Keep `max_size` and `max_solutions` small, restrict `ko_candidates`, and use
+> Gurobi for anything beyond a toy model.
 
 ---
 

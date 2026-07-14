@@ -1,9 +1,15 @@
 """Dash app entry point.
 
-Builds a single-page app with tabs over the four panels (load, reactions,
-exchanges, analysis), sharing a `session-store` (the only model handle the
-browser holds) and a `job-store`. The app drives a LIVE ModelService and a
+Builds a single-page app with tabs over the panels (load, reactions, exchanges,
+analysis, scan), sharing a `session-store` (the only model handle the browser
+holds) and a `job-store`. The app drives a LIVE ModelService and a
 LocalProcessBackend in-process — see gem_suite/app/services.py.
+
+Strain design is deliberately NOT exposed in the local UI: the MILPs are far too
+slow to run interactively without a cluster. The code is intact and still driven
+from Python / the job layer (see gem_suite/strain_design.py and
+gem_suite/app/pages/strain_design.py), ready for the SLURM backend. To re-enable
+the tab, add `strain_design` back to the imports, `_PAGES` and the tab list below.
 
 Run:  python -m gem_suite.app.main
 """
@@ -17,7 +23,6 @@ from gem_suite.app.pages import (
     load,
     reactions,
     scan,
-    strain_design,
 )
 
 # Brand assets (logos + theme.css) ship inside the package at gem_suite/app/assets,
@@ -77,7 +82,6 @@ def create_app(service=None, backend=None) -> Dash:
                     _tab("Exchanges", "tab-exchanges", exchanges),
                     _tab("Analysis", "tab-analysis", analysis),
                     _tab("Scan", "tab-scan", scan),
-                    _tab("Strain design", "tab-strain", strain_design),
                 ],
             ),
         ],
@@ -85,7 +89,8 @@ def create_app(service=None, backend=None) -> Dash:
                "padding": "0 1rem 2rem"},
     )
 
-    for page in (load, reactions, exchanges, analysis, scan, strain_design):
+    # Strain design is intentionally absent (see module docstring).
+    for page in (load, reactions, exchanges, analysis, scan):
         page.register_callbacks(app, service, backend)
 
     return app

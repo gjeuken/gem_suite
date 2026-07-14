@@ -107,6 +107,13 @@ The Analysis tab runs it on the (loopless) pFBA solution.
 
 ## Strain design (`gem_suite/strain_design.py`)
 
+> **Not exposed in the local UI** — the MILPs are too slow to run interactively
+> without a cluster. Everything below is reachable from Python (and through the job
+> layer, which is built to move to SLURM/HPC). The Dash page still exists at
+> `gem_suite/app/pages/strain_design.py`; re-enable it by adding it back to the
+> imports, tab list and `register_callbacks` loop in `gem_suite/app/main.py`.
+> Requires the extra: `pip install -e ".[strain]"`.
+
 | Feature | Function | StrainDesign / COBRApy |
 |---|---|---|
 | Build suppress/protect modules | `_build_modules` | `straindesign.SDModule(model, sd.names.SUPPRESS \| PROTECT, constraints=[…])` |

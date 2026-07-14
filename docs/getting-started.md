@@ -37,13 +37,20 @@ extras you need:
 pip install --upgrade pip
 pip install -e .                 # core: cobra, optlang, pandas, scipy, pyarrow
 pip install -e ".[app]"          # + Dash front-end (dash, dash-ag-grid)
-pip install -e ".[strain]"       # + StrainDesign (strain-design tab)
-pip install -e ".[gurobi]"       # + gurobipy (Gurobi solver)
+pip install -e ".[gurobi]"       # + gurobipy (optional, faster solver)
 pip install -e ".[dev]"          # + pytest (run the test suite)
+pip install -e ".[strain]"       # + StrainDesign — optional, see note below
 
-# everything at once:
-pip install -e ".[app,strain,gurobi,dev]"
+# the usual choice:
+pip install -e ".[app,dev]"
 ```
+
+> **Note — StrainDesign / strain design.** The strain-design code (MCS, OptKnock,
+> RobustKnock, OptCouple, knock-ins, verification) is implemented and tested, but
+> it is **not exposed in the local UI**: those MILPs are far too slow to run
+> interactively without a cluster. Install the `strain` extra only if you want to
+> drive it from Python or run it through the job layer (which is designed to move
+> to SLURM/HPC).
 
 ### Install as a standalone command (pipx)
 
@@ -52,7 +59,7 @@ If you just want the app as a command (no cloning, no editable install), use
 environment and puts `gem-suite-app` on your PATH:
 
 ```bash
-pipx install "gem_suite[app,strain] @ git+https://github.com/gjeuken/gem_suite.git"
+pipx install "gem_suite[app] @ git+https://github.com/gjeuken/gem_suite.git"
 gem-suite-app        # serves the app at http://127.0.0.1:8050
 ```
 

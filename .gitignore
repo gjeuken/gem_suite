@@ -9,3 +9,6 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
+
+# local virtualenv
+.venv/
