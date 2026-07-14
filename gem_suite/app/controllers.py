@@ -394,6 +394,48 @@ def run_scan(service: ModelService, session_id: str,
     return service.scan_objective(session_id, scan, response=response)
 
 
+# -- multi-plot scan: record everything once, plot any quantity vs any other -- #
+
+SCAN_CATEGORIES = ["objective", "scanned", "exchange", "intracellular", "all"]
+
+
+def run_scan_fluxes(service: ModelService, session_id: str,
+                    axis1: dict, axis2: dict | None = None) -> dict:
+    """Run a grid scan recording every flux; returns metadata (data stays server-side)."""
+    scan = [axis1] + ([axis2] if axis2 else [])
+    return service.scan_fluxes(session_id, scan)
+
+
+def scan_series(service: ModelService, session_id: str, key: str) -> list:
+    """One series ("objective" or a reaction id) from the last scan."""
+    return service.scan_series(session_id, key)
+
+
+def scan_axis_options(meta: dict, category: str) -> list[dict]:
+    """Dropdown options for a plot axis, filtered by category.
+
+    Categories: objective | scanned | exchange | intracellular | all.
+    Labels are prefixed so a searchable dropdown can also be filtered by typing.
+    """
+    if not meta:
+        return []
+    objective = [{"label": "objective", "value": "objective"}]
+    scanned = [{"label": f"scanned: {r}", "value": r} for r in meta.get("scanned", [])]
+    exchange = [{"label": f"exchange: {r}", "value": r} for r in meta.get("exchanges", [])]
+    intra = [{"label": f"intracellular: {r}", "value": r}
+             for r in meta.get("intracellular", [])]
+
+    if category == "objective":
+        return objective
+    if category == "scanned":
+        return scanned
+    if category == "exchange":
+        return exchange
+    if category == "intracellular":
+        return intra
+    return objective + scanned + exchange + intra          # "all"
+
+
 def fva_spans(backend: JobBackend, job_id: str, tol: float = 1e-9) -> list[dict]:
     """FVA ranges with a non-zero span (max - min > tol), widest span first.
 

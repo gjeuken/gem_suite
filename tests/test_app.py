@@ -175,6 +175,45 @@ def test_run_scan_response_flux_and_label(service, session):
     assert fig.data[0].type == "scatter"
 
 
+def test_run_scan_fluxes_and_axis_options(service, session):
+    meta = controllers.run_scan_fluxes(
+        service, session,
+        {"reaction_id": "EX_glc__D_e", "min": -10, "max": -2, "points": 4})
+    assert meta["ndim"] == 1 and meta["scanned"] == ["EX_glc__D_e"]
+
+    # category filters for a plot axis
+    assert controllers.scan_axis_options(meta, "objective") == \
+        [{"label": "objective", "value": "objective"}]
+    scanned = controllers.scan_axis_options(meta, "scanned")
+    assert [o["value"] for o in scanned] == ["EX_glc__D_e"]
+    exch = controllers.scan_axis_options(meta, "exchange")
+    assert "EX_co2_e" in {o["value"] for o in exch}
+    assert all(o["label"].startswith("exchange: ") for o in exch)
+    intra = controllers.scan_axis_options(meta, "intracellular")
+    assert "PFK" in {o["value"] for o in intra}
+    everything = controllers.scan_axis_options(meta, "all")
+    assert len(everything) == 1 + len(scanned) + len(exch) + len(intra)
+
+    # any quantity can be pulled as a series for plotting
+    xs = controllers.scan_series(service, session, "EX_glc__D_e")
+    ys = controllers.scan_series(service, session, "EX_co2_e")
+    assert len(xs) == len(ys) == 4
+
+
+def test_build_xy_and_surface_figures(service, session):
+    from gem_suite.app.pages.scan import build_surface_figure, build_xy_figure
+
+    fig = build_xy_figure("EX_glc__D_e", [-10, -5], "EX_co2_e", [22.8, 11.0])
+    assert fig.data[0].type == "scatter"
+    assert "EX_co2_e flux" in fig.layout.yaxis.title.text
+    assert "EX_glc__D_e flux" in fig.layout.xaxis.title.text
+
+    axes = [{"reaction_id": "A", "values": [1, 2]},
+            {"reaction_id": "B", "values": [3, 4]}]
+    surf = build_surface_figure(axes, "objective", [[0.1, 0.2], [0.3, 0.4]])
+    assert surf.data[0].type == "surface"
+
+
 def test_run_scan_2d_and_surface(service, session):
     from gem_suite.app.pages.scan import build_scan_figure
 

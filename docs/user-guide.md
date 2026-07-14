@@ -197,19 +197,38 @@ solver, status, package versions) so the numbers are always traceable.
 
 ## Scan (phenotypic phase planes / robustness)
 
-Pin one or two reactions across a range and watch a **response** change.
+Pin one or two reactions across a range, then plot **anything against anything**.
 
 1. Pick **flux 1** (and tick *"scan a second flux"* for a 3-D surface), with a
    **min**, **max**, and number of **points**.
-2. Choose what to **plot (response)**: the **objective** (default) or **any
-   reaction's flux** — e.g. how CO₂ secretion varies as glucose uptake changes.
-3. **Run scan** → a 2-D line (one flux) or a 3-D surface (two fluxes).
+2. Set how many **plots** you want (1–8).
+3. **Run scan.**
+
+The scan solves the model once per grid point and **records the objective and
+every reaction flux** — so you don't have to re-run it to look at something else.
+The data stays server-side; only the series you plot are sent to the browser.
+
+### Choosing what each plot shows
+
+Every plot has its own **X** and **Y** picker, each made of two dropdowns:
+
+- a **category** — `objective`, `scanned`, `exchange`, `intracellular`, or `all`,
+- a **quantity** — filtered by that category (searchable).
+
+So one plot can show growth vs glucose uptake, the next acetate vs glucose, the
+next an internal flux vs the objective — all from a single scan. Change a picker
+and the plot redraws instantly (no re-solve).
+
+For a **2-D scan** each plot is a **surface** of the chosen Y over the two scanned
+fluxes (X comes from the scan itself, so the X picker is hidden).
 
 At each grid point the scanned reaction(s) are fixed and the model re-optimized;
 infeasible points appear as gaps. Your session's bounds are **not** modified.
 
-> Try it: scan `EX_glc__D_e` from −10 to −2 with response = objective → growth
-> falls roughly linearly with carbon supply.
+> Try it: scan `EX_o2_e` from −20 to 0 (5 points), ask for 3 plots, and set Y to
+> `objective`, `EX_ac_e`, `EX_etoh_e` (X = the scanned `EX_o2_e` in each). You'll
+> see the aerobic→anaerobic shift: growth drops, acetate rises then falls, and
+> ethanol appears only once oxygen runs out.
 
 ---
 

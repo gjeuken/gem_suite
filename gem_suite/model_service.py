@@ -99,6 +99,9 @@ class _Session:
     fmt: str                       # detected format: "sbml" | "json" | "mat"
     changes: list[ChangeRecord] = field(default_factory=list)
     last_fluxes: Optional[dict[str, float]] = None   # cache for get_reaction
+    # last full grid scan: {"axes": [...], "series": {key: values}} — kept
+    # server-side so a large flux matrix never crosses to the UI.
+    last_scan: Optional[dict] = None
 
 
 DEFAULT_BOUND = 1000.0   # cobra's default flux magnitude for an open bound
@@ -521,6 +524,7 @@ class ModelService:
             pass
         s.changes.clear()
         s.last_fluxes = None
+        s.last_scan = None
 
     # -- exchange / transport handling -------------------------------------- #
 
@@ -769,6 +773,94 @@ class ModelService:
             "axes": axes,
             "values": values,
         }
+
+    def scan_fluxes(self, session_id: str, scan: list[dict]) -> dict:
+        """Grid scan recording the objective AND every reaction flux per point.
+
+        Same grid semantics as `scan_objective` (1 or 2 pinned reactions, session
+        bounds untouched), but every quantity is recorded so the UI can plot any
+        one against any other afterwards. The full result is cached server-side on
+        the session; only metadata is returned — fetch a single series with
+        `scan_series()` so a large flux matrix never crosses to the browser.
+
+        Returns {axes, objective, direction, ndim, n_points, scanned,
+                 exchanges, intracellular}.
+        """
+        if not 1 <= len(scan) <= 2:
+            raise ValueError("scan must specify 1 or 2 reactions")
+        s = self._session(session_id)
+        model = s.model
+
+        axes: list[dict] = []
+        rxns = []
+        for a in scan:
+            rxn = model.reactions.get_by_id(a["reaction_id"])
+            axes.append({
+                "reaction_id": rxn.id,
+                "values": _linspace(float(a["min"]), float(a["max"]), int(a["points"])),
+            })
+            rxns.append(rxn)
+
+        keys = ["objective"] + [r.id for r in model.reactions]
+
+        def _record(into: dict) -> None:
+            val = model.slim_optimize(error_value=float("nan"))
+            if math.isnan(val):                       # infeasible point -> gaps
+                for k in keys:
+                    into[k].append(None)
+                return
+            into["objective"].append(float(val))
+            for r in model.reactions:                 # reads the optimised primal
+                into[r.id].append(float(r.flux))
+
+        series: dict[str, list] = {k: [] for k in keys}
+        if len(axes) == 1:
+            for v in axes[0]["values"]:
+                with model:                           # auto-reverts bounds
+                    rxns[0].bounds = (v, v)
+                    _record(series)
+        else:
+            for v0 in axes[0]["values"]:
+                row: dict[str, list] = {k: [] for k in keys}
+                for v1 in axes[1]["values"]:
+                    with model:
+                        rxns[0].bounds = (v0, v0)
+                        rxns[1].bounds = (v1, v1)
+                        _record(row)
+                for k in keys:
+                    series[k].append(row[k])          # 2-D: one row per axis-0 value
+
+        s.last_scan = {"axes": axes, "series": series}
+
+        boundary = {r.id for r in model.boundary}
+        n_points = len(axes[0]["values"]) * (len(axes[1]["values"]) if len(axes) == 2 else 1)
+        return {
+            "axes": axes,
+            "objective": str(model.objective.expression),
+            "direction": model.objective.direction,
+            "ndim": len(axes),
+            "n_points": n_points,
+            "scanned": [a["reaction_id"] for a in axes],
+            "exchanges": sorted(boundary),
+            "intracellular": sorted(r.id for r in model.reactions if r.id not in boundary),
+        }
+
+    def scan_series(self, session_id: str, key: str) -> list:
+        """One recorded series ("objective" or a reaction id) from the last scan."""
+        s = self._session(session_id)
+        if not s.last_scan:
+            raise ValueError("no scan has been run for this session")
+        try:
+            return s.last_scan["series"][key]
+        except KeyError:
+            raise KeyError(f"{key!r} was not recorded in the last scan") from None
+
+    def scan_axes(self, session_id: str) -> list[dict]:
+        """The axes of the last scan ([{reaction_id, values}, ...])."""
+        s = self._session(session_id)
+        if not s.last_scan:
+            raise ValueError("no scan has been run for this session")
+        return s.last_scan["axes"]
 
     # -- slow analysis: exposed for blocking use, but normally run via the
     #    job layer (see jobs.py JobType.FVA). ------------------------------- #

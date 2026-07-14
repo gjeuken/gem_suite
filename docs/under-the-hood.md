@@ -92,6 +92,7 @@ Every edit returns a `ChangeRecord` and is appended to a per-session log.
 | Feature | Method | COBRApy |
 |---|---|---|
 | Scan 1–2 fixed fluxes vs a response | `scan_objective` | for each grid point: `with model:` (context manager, auto-reverts), `reaction.bounds = (v, v)`, `model.slim_optimize()`; response = objective value or `reaction.flux` (the optimised primal) |
+| Multi-plot scan (record everything) | `scan_fluxes` → `scan_series` / `scan_axes` | same grid, but records the objective **and every** `reaction.flux` per point; cached on the session (`last_scan`) so the UI can plot any quantity vs any other without re-solving. `model.boundary` splits exchange vs intracellular for the axis-category pickers |
 
 Using `slim_optimize` + `reaction.flux` avoids building a full `Solution` per point
 and emits no infeasibility warnings; `with model:` guarantees the session bounds

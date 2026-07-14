@@ -205,6 +205,55 @@ def test_scan_response_unknown_reaction_raises(service: ModelService, session: s
             response="NOPE")
 
 
+def test_scan_fluxes_records_everything(service: ModelService, session: str):
+    meta = service.scan_fluxes(
+        session, [{"reaction_id": "EX_glc__D_e", "min": -10, "max": -2, "points": 4}])
+    assert meta["ndim"] == 1 and meta["n_points"] == 4
+    assert meta["scanned"] == ["EX_glc__D_e"]
+    # every reaction is categorised as exchange or intracellular
+    assert len(meta["exchanges"]) + len(meta["intracellular"]) == N_REACTIONS
+    assert "EX_co2_e" in meta["exchanges"] and "PFK" in meta["intracellular"]
+
+    # any recorded quantity can be fetched as a series
+    obj = service.scan_series(session, "objective")
+    co2 = service.scan_series(session, "EX_co2_e")
+    glc = service.scan_series(session, "EX_glc__D_e")
+    assert len(obj) == len(co2) == len(glc) == 4
+    assert obj == sorted(obj, reverse=True)          # growth falls with less carbon
+    assert all(v > 0 for v in co2)                   # CO2 secreted
+    # the scanned reaction's recorded flux equals the pinned grid value
+    assert [round(v, 6) for v in glc] == [-10.0, -7.333333, -4.666667, -2.0]
+
+
+def test_scan_fluxes_2d_grid_and_series(service: ModelService, session: str):
+    meta = service.scan_fluxes(session, [
+        {"reaction_id": "EX_glc__D_e", "min": -10, "max": -4, "points": 3},
+        {"reaction_id": "EX_o2_e", "min": -20, "max": -5, "points": 3},
+    ])
+    assert meta["ndim"] == 2 and meta["n_points"] == 9
+    grid = service.scan_series(session, "objective")
+    assert len(grid) == 3 and all(len(row) == 3 for row in grid)
+
+
+def test_scan_series_errors(service: ModelService, session: str):
+    with pytest.raises(ValueError):                  # no scan yet
+        service.scan_series(session, "objective")
+    service.scan_fluxes(
+        session, [{"reaction_id": "EX_glc__D_e", "min": -10, "max": -2, "points": 3}])
+    with pytest.raises(KeyError):
+        service.scan_series(session, "NOT_A_REACTION")
+
+
+def test_scan_fluxes_does_not_mutate_session(service: ModelService, session: str):
+    before = service.get_reaction(session, "EX_glc__D_e")
+    service.scan_fluxes(
+        session, [{"reaction_id": "EX_glc__D_e", "min": -10, "max": -2, "points": 3}])
+    after = service.get_reaction(session, "EX_glc__D_e")
+    assert (after["lower_bound"], after["upper_bound"]) == \
+           (before["lower_bound"], before["upper_bound"])
+    assert service.change_log(session) == []
+
+
 def test_scan_objective_does_not_mutate_session(service: ModelService, session: str):
     before = service.get_reaction(session, "EX_glc__D_e")
     service.scan_objective(
