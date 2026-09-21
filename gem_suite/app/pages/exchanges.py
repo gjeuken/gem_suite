@@ -8,7 +8,8 @@ from gem_suite import ExchangeDirection
 from gem_suite.app import controllers
 
 _COLUMN_DEFS = [
-    {"field": "reaction_id", "headerName": "Exchange", "filter": True, "width": 160},
+    {"field": "reaction_id", "headerName": "Exchange", "filter": True, "width": 160,
+     "sort": "asc"},
     {"field": "metabolite_id", "headerName": "Metabolite", "filter": True, "width": 150},
     {"field": "name", "headerName": "Name", "flex": 1, "minWidth": 200},
     {"field": "kind", "headerName": "Kind", "width": 110},
@@ -33,6 +34,13 @@ def layout() -> html.Div:
                     html.Button("Apply toggle", id="exch-apply", n_clicks=0),
                 ],
                 style={"display": "flex", "gap": "0.5rem", "alignItems": "center"},
+            ),
+            dcc.Input(
+                id="exch-search",
+                type="search",
+                placeholder="Search exchanges…",
+                debounce=False,
+                style={"width": "20rem", "marginTop": "0.5rem"},
             ),
             dag.AgGrid(
                 id="exchanges-grid",
@@ -61,6 +69,17 @@ def register_callbacks(app, service, backend) -> None:
             return controllers.exchange_rows(service, session_id)
         except Exception:
             return []
+
+    @app.callback(
+        Output("exchanges-grid", "dashGridOptions"),
+        Input("exch-search", "value"),
+        State("exchanges-grid", "dashGridOptions"),
+        prevent_initial_call=True,
+    )
+    def _search(query, options):
+        options = dict(options or {})
+        options["quickFilterText"] = query or ""
+        return options
 
     @app.callback(
         Output("exchanges-msg", "children"),
