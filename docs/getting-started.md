@@ -141,7 +141,10 @@ Tests always use the small `e_coli_core` model — never a genome-scale model.
 
 | Symptom | Likely cause / fix |
 |---|---|
+| pip errors with `Could not find a version that satisfies the requirement` / `requires-python` / `ignored versions` | Your Python is older than 3.11. Check with `python --version`; install 3.11+ (or point pipx at it: `pipx install --python python3.11 …`). |
+| `git+https://…` install fails with `git: command not found` or a clone error | pipx/pip needs **git** installed, and the machine must reach github.com. Install git; behind a proxy/VPN, retry on an open network. |
+| `pipx: command not found` | pipx isn't installed → `python3 -m pip install --user pipx && python3 -m pipx ensurepath`, then open a new shell. |
 | `Could not set solver 'gurobi'` on load | No/invalid Gurobi license → `GEM_SUITE_SOLVER=glpk`. |
 | App starts but a tab errors on first click | No model loaded yet — use the **Load** tab first. |
 | `BrokenProcessPool` when launching | A custom launch script must guard its entry with `if __name__ == "__main__":` (job workers re-import it). The provided entry point already does. |
-| Strain-design tab missing features | Install the extra: `pip install -e ".[strain]"`. |
+| Want to run strain design | It has **no tab** (its MILPs are too slow to run interactively) — install the extra with `pip install -e ".[strain]"` and drive it from Python / the job layer. See the [user guide](user-guide.md#strain-design-api-only). |
