@@ -30,8 +30,28 @@ def _label(key: str) -> str:
     return "objective" if key == "objective" else f"{key} flux"
 
 
-def build_xy_figure(x_key: str, xs: list, y_key: str, ys: list) -> go.Figure:
-    """Y vs X along the scan (both are series over the grid points)."""
+def _is_uptake(key: str, values: list, exchanges) -> bool:
+    """An exchange series that is pure uptake (all non-gap values <= 0, some < 0)."""
+    if not exchanges or key not in exchanges:
+        return False
+    flat = [v for row in values for v in (row if isinstance(row, list) else [row])
+            if v is not None and not (isinstance(v, float) and math.isnan(v))]
+    return bool(flat) and all(v <= 0 for v in flat) and any(v < 0 for v in flat)
+
+
+def _uptake_axis(reverse: bool) -> dict:
+    # Reversing the axis plots |v| (more uptake -> further right/up) while the
+    # tick labels keep the true, negative flux values.
+    return {"autorange": "reversed"} if reverse else {}
+
+
+def build_xy_figure(x_key: str, xs: list, y_key: str, ys: list,
+                    uptake_exchanges=None) -> go.Figure:
+    """Y vs X along the scan (both are series over the grid points).
+
+    Axes showing a pure-uptake exchange flux (one listed in `uptake_exchanges`)
+    are reversed, so larger uptake plots further from the origin.
+    """
     fig = go.Figure(go.Scatter(
         x=xs, y=ys, mode="lines+markers", connectgaps=False,
         line={"color": "#4c78a8"},
@@ -42,19 +62,30 @@ def build_xy_figure(x_key: str, xs: list, y_key: str, ys: list) -> go.Figure:
         template="plotly_white", height=380,
         margin={"l": 60, "r": 20, "t": 45, "b": 45},
     )
+    fig.update_xaxes(**_uptake_axis(_is_uptake(x_key, xs, uptake_exchanges)))
+    fig.update_yaxes(**_uptake_axis(_is_uptake(y_key, ys, uptake_exchanges)))
     return fig
 
 
-def build_surface_figure(axes: list[dict], z_key: str, grid: list) -> go.Figure:
-    """For a 2-D scan: the chosen quantity as a surface over both scanned axes."""
+def build_surface_figure(axes: list[dict], z_key: str, grid: list,
+                         uptake_exchanges=None) -> go.Figure:
+    """For a 2-D scan: the chosen quantity as a surface over both scanned axes.
+
+    Pure-uptake exchange axes are reversed, as in `build_xy_figure`.
+    """
     z = [[(v if v is not None else math.nan) for v in row] for row in grid]
     fig = go.Figure(go.Surface(z=z, x=axes[1]["values"], y=axes[0]["values"],
                                colorbar={"title": _label(z_key)}))
     fig.update_layout(
         title=f"{_label(z_key)} surface",
-        scene={"xaxis_title": f"{axes[1]['reaction_id']} flux",
-               "yaxis_title": f"{axes[0]['reaction_id']} flux",
-               "zaxis_title": _label(z_key)},
+        scene={"xaxis": {"title": f"{axes[1]['reaction_id']} flux",
+                         **_uptake_axis(_is_uptake(axes[1]["reaction_id"],
+                                                   axes[1]["values"], uptake_exchanges))},
+               "yaxis": {"title": f"{axes[0]['reaction_id']} flux",
+                         **_uptake_axis(_is_uptake(axes[0]["reaction_id"],
+                                                   axes[0]["values"], uptake_exchanges))},
+               "zaxis": {"title": _label(z_key),
+                         **_uptake_axis(_is_uptake(z_key, grid, uptake_exchanges))}},
         template="plotly_white", height=480,
         margin={"l": 0, "r": 0, "t": 45, "b": 0},
     )
@@ -177,6 +208,12 @@ def layout() -> html.Div:
                     html.Label("plots"),
                     dcc.Input(id="scan-nplots", type="number", value=1, min=1,
                               max=_MAX_PLOTS, step=1, style={"width": "5rem"}),
+                    dcc.Checklist(
+                        id="scan-abs-uptake",
+                        options=[{"label": " plot uptake as magnitude (reverse "
+                                           "axes of uptake exchange fluxes)",
+                                  "value": "on"}],
+                        value=["on"]),
                 ],
                 style={"display": "flex", "gap": "0.5rem", "alignItems": "center",
                        "marginTop": "0.75rem"},
@@ -329,10 +366,11 @@ def register_callbacks(app, service, backend) -> None:
         Input({"kind": "scan-varx", "i": ALL}, "value"),
         Input({"kind": "scan-vary", "i": ALL}, "value"),
         Input("scan-meta", "data"),
+        Input("scan-abs-uptake", "value"),
         State("session-store", "data"),
         prevent_initial_call=True,
     )
-    def _draw(varx, vary, meta, session_id):
+    def _draw(varx, vary, meta, abs_uptake, session_id):
         n = len(vary or [])
         if not n:
             return []
@@ -340,6 +378,7 @@ def register_callbacks(app, service, backend) -> None:
             return [_empty_figure() for _ in range(n)]
         surface = meta.get("ndim", 1) == 2
         axes = meta["axes"]
+        uptake = set(meta.get("exchanges", [])) if abs_uptake else None
         figures = []
         for i in range(n):
             y_key = vary[i]
@@ -350,13 +389,13 @@ def register_callbacks(app, service, backend) -> None:
                     continue
                 ys = controllers.scan_series(service, session_id, y_key)
                 if surface:
-                    figures.append(build_surface_figure(axes, y_key, ys))
+                    figures.append(build_surface_figure(axes, y_key, ys, uptake))
                 else:
                     if not x_key:
                         figures.append(_empty_figure("Pick an X quantity."))
                         continue
                     xs = controllers.scan_series(service, session_id, x_key)
-                    figures.append(build_xy_figure(x_key, xs, y_key, ys))
+                    figures.append(build_xy_figure(x_key, xs, y_key, ys, uptake))
             except Exception as exc:
                 figures.append(_empty_figure(f"{type(exc).__name__}: {exc}"))
         return figures

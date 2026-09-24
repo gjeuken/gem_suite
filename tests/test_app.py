@@ -549,3 +549,30 @@ def test_create_app_builds(service, backend):
     assert len(app.callback_map) >= 6
     rendered = str(app.layout)
     assert "session-store" in rendered and "job-store" in rendered
+
+
+def test_scan_uptake_axes_reversed():
+    from gem_suite.app.pages.scan import build_surface_figure, build_xy_figure
+
+    ex = {"EX_glc__D_e", "EX_co2_e", "EX_o2_e"}
+    # uptake (all <= 0) exchange axis is reversed; secretion axis is not
+    fig = build_xy_figure("EX_glc__D_e", [-10, -5, None], "EX_co2_e", [22.8, 11.0, None],
+                          uptake_exchanges=ex)
+    assert fig.layout.xaxis.autorange == "reversed"
+    assert fig.layout.yaxis.autorange != "reversed"
+    assert list(fig.data[0].x[:2]) == [-10, -5]          # tick values stay negative
+    # toggle off -> nothing reversed
+    off = build_xy_figure("EX_glc__D_e", [-10, -5], "EX_co2_e", [22.8, 11.0])
+    assert off.layout.xaxis.autorange != "reversed"
+    # mixed-sign exchange series are left alone
+    mixed = build_xy_figure("EX_glc__D_e", [-1, 1], "objective", [0.1, 0.2],
+                            uptake_exchanges=ex)
+    assert mixed.layout.xaxis.autorange != "reversed"
+
+    axes = [{"reaction_id": "EX_glc__D_e", "values": [-10, -5]},
+            {"reaction_id": "EX_o2_e", "values": [-20, -5]}]
+    surf = build_surface_figure(axes, "objective", [[0.1, 0.2], [0.3, 0.4]],
+                                uptake_exchanges=ex)
+    assert surf.layout.scene.xaxis.autorange == "reversed"
+    assert surf.layout.scene.yaxis.autorange == "reversed"
+    assert surf.layout.scene.zaxis.autorange != "reversed"
